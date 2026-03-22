@@ -3,6 +3,12 @@ import streamlit as st
 import plotly.graph_objects as go
 from datetime import datetime, timezone
 
+try:
+    import anthropic
+    HAS_ANTHROPIC = True
+except ImportError:
+    HAS_ANTHROPIC = False
+
 from fetch import get_congestion_snapshot
 
 st.set_page_config(page_title="Sky Status", page_icon="favicon.svg", layout="wide")
@@ -292,6 +298,137 @@ st.html(f"""
     {leaderboard_html}
 </div>
 """)
+
+# ---------------------------------------------------------------------------
+# AI Summary
+# ---------------------------------------------------------------------------
+
+def _build_sky_prompt(snapshot, ts_str):
+    """Build a structured prompt with all current data for the AI summary."""
+    top10 = snapshot["airports"][:10]
+    total_ac = snapshot["total_us_aircraft"]
+    total_active = sum(a["active"] for a in snapshot["airports"])
+    total_ground = sum(a["on_ground"] for a in snapshot["airports"])
+    total_desc = sum(a["descending"] for a in snapshot["airports"])
+    total_climb = sum(a["climbing"] for a in snapshot["airports"])
+    ground_pct = round(total_ground / total_active * 100) if total_active else 0
+
+    airport_lines = "\n".join(
+        f"  {a['iata']} ({a['name']}): {a['active']} active, "
+        f"{a['on_ground']} ground ({round(a['on_ground']/a['active']*100) if a['active'] else 0}%), "
+        f"{a['descending']} arriving, {a['climbing']} departing"
+        for a in top10
+    )
+
+    # Find notable patterns
+    high_ground = [a for a in top10 if a["active"] > 0 and a["on_ground"] / a["active"] > 0.7]
+    arrival_heavy = [a for a in top10 if a["descending"] > a["climbing"] * 2 and a["descending"] >= 5]
+    departure_heavy = [a for a in top10 if a["climbing"] > a["descending"] * 2 and a["climbing"] >= 5]
+
+    patterns = []
+    if high_ground:
+        patterns.append(f"High ground congestion (>70%): {', '.join(a['iata'] for a in high_ground)}")
+    if arrival_heavy:
+        patterns.append(f"Arrival-heavy airports: {', '.join(a['iata'] for a in arrival_heavy)}")
+    if departure_heavy:
+        patterns.append(f"Departure-heavy airports: {', '.join(a['iata'] for a in departure_heavy)}")
+
+    pattern_block = "\n".join(f"  - {p}" for p in patterns) if patterns else "  None detected"
+
+    return f"""You are a concise aviation analyst writing a 3-4 sentence snapshot of current US airspace conditions. Write for an informed general audience, like a flight tracker blog or aviation Twitter account.
+
+CURRENT DATA ({ts_str}):
+  Total aircraft over US: {total_ac:,}
+  Total active near airports: {total_active}
+  Overall ground rate: {ground_pct}% ({total_ground} ground / {total_active} active)
+  Total arriving (descending): {total_desc}
+  Total departing (climbing): {total_climb}
+
+TOP 10 AIRPORTS:
+{airport_lines}
+
+NOTABLE PATTERNS:
+{pattern_block}
+
+REQUIREMENTS:
+- Exactly 3-4 sentences. No more.
+- Lead with the most interesting finding, not a generic overview.
+- Use specific numbers (airport codes, counts, percentages).
+- Compare airports to each other when relevant.
+- If ground rates are high, say what that implies for travelers (delays, taxi queues).
+- If arrival/departure imbalance exists, note it.
+- Write in present tense. No hedging ("may", "could potentially"). State what the data shows.
+- No em dashes. Use commas or periods instead.
+- No inflated language (robust, comprehensive, significant, notably). Just state the facts.
+- No filler phrases ("it is worth noting", "interestingly"). Get to the point.
+- Sound like a sharp analyst, not a press release."""
+
+
+@st.cache_data(ttl=300)
+def _get_ai_summary(prompt):
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        try:
+            api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+        except Exception:
+            api_key = ""
+    if not api_key:
+        return None
+    client = anthropic.Anthropic(api_key=api_key)
+    msg = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=250,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return msg.content[0].text
+
+
+if HAS_ANTHROPIC:
+    st.markdown("---")
+    st.markdown(f'<div class="section-header">AI Briefing</div>', unsafe_allow_html=True)
+
+    if "sky_summary" not in st.session_state:
+        st.session_state.sky_summary = ""
+    if "sky_summary_ts" not in st.session_state:
+        st.session_state.sky_summary_ts = ""
+
+    _snap_ts = snapshot.get("timestamp", "")
+    if st.session_state.sky_summary_ts != _snap_ts:
+        st.session_state.sky_summary = ""
+        st.session_state.sky_summary_ts = _snap_ts
+
+    _gen = st.button("Generate Briefing", key="sky_ai_btn", type="secondary")
+
+    if _gen:
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            try:
+                api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+            except Exception:
+                api_key = ""
+        if not api_key:
+            st.warning("Add ANTHROPIC_API_KEY to .env (local) or Streamlit secrets (cloud).")
+        else:
+            with st.spinner("Analyzing airspace..."):
+                try:
+                    prompt = _build_sky_prompt(snapshot, local_ts)
+                    result = _get_ai_summary(prompt)
+                    if result:
+                        st.session_state.sky_summary = result
+                    else:
+                        st.warning("No summary returned. Check API key.")
+                except Exception as e:
+                    st.error(f"API error: {e}")
+
+    if st.session_state.sky_summary:
+        st.markdown(
+            f'<div style="background:linear-gradient(135deg, {NAVY_MID} 0%, {NAVY} 100%); '
+            f'padding:1rem 1.5rem; border-radius:8px; border-left:3px solid {RED}; '
+            f'margin:0.5rem 0 1rem 0;">'
+            f'<span style="color:{WHITE}; font-size:0.92rem; line-height:1.7; font-family:Inter,sans-serif;">'
+            f'{st.session_state.sky_summary}</span></div>',
+            unsafe_allow_html=True,
+        )
 
 # Map + Ground Congestion side by side
 st.markdown("---")
