@@ -1269,7 +1269,7 @@ with st.expander("Data Dictionary"):
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap');
 </style>
-<div style="font-family:'Inter',sans-serif; color:{SILVER}; font-size:clamp(0.75em, 2.5vw, 0.85em); line-height:1.7; overflow-wrap:break-word;">
+<div style="font-family:'Inter',sans-serif; color:{SILVER}; font-size:clamp(0.75em, 2.5vw, 0.85em); line-height:1.7; overflow-wrap:break-word; overflow-x:auto; -webkit-overflow-scrolling:touch;">
 
 <div style="color:{WHITE}; font-weight:700; font-size:1em; margin-bottom:8px; border-bottom:1px solid {SILVER_DARK}; padding-bottom:6px;">Metrics</div>
 <table style="width:100%; border-collapse:collapse;">
