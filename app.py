@@ -418,42 +418,50 @@ with col_right:
         )
         st.plotly_chart(fig_flow, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
-# Ground congestion scatter
+# Ground congestion bar
 st.markdown("---")
-st.markdown(f'<div class="section-header">Airport Efficiency</div>', unsafe_allow_html=True)
-scatter_apts = [a for a in snapshot["airports"] if a["active"] >= 5]
-if scatter_apts:
-    ground_ratios = [round(a["on_ground"] / a["active"] * 100) if a["active"] else 0 for a in scatter_apts]
-    fig_scatter = go.Figure(go.Scatter(
-        x=[a["active"] for a in scatter_apts],
-        y=ground_ratios,
-        mode="markers+text",
-        text=[a["iata"] for a in scatter_apts],
-        textposition="top center",
-        textfont=dict(size=9, color="white", family="JetBrains Mono"),
-        marker=dict(
-            size=[max(a["active"] * 1.5, 10) for a in scatter_apts],
-            color=ground_ratios,
-            colorscale=[[0, "#2E8B57"], [0.5, SILVER], [1, RED]],
-            opacity=0.85,
-            line=dict(width=1, color="white"),
-            colorbar=dict(title=dict(text="Ground %", font=dict(color=SILVER, size=10)), tickfont=dict(color=SILVER, size=9)),
-        ),
-        hovertext=[f"<b>{a['iata']}</b> {a['name']}<br>Active: {a['active']}<br>Ground: {a['on_ground']} ({round(a['on_ground']/a['active']*100)}%)" for a in scatter_apts],
+st.markdown(f'<div class="section-header">Ground Congestion</div>', unsafe_allow_html=True)
+ground_apts = [a for a in snapshot["airports"] if a["on_ground"] > 0 and a["active"] >= 3]
+if ground_apts:
+    for a in ground_apts:
+        a["_ground_pct"] = round(a["on_ground"] / a["active"] * 100) if a["active"] else 0
+    ground_apts.sort(key=lambda a: a["_ground_pct"])
+    ground_apts = ground_apts[-15:]  # top 15 by ground %
+
+    bar_colors = []
+    for a in ground_apts:
+        pct = a["_ground_pct"]
+        if pct >= 70:
+            bar_colors.append(RED)
+        elif pct >= 40:
+            bar_colors.append(RED_LIGHT)
+        else:
+            bar_colors.append(SILVER)
+
+    fig_ground = go.Figure()
+    fig_ground.add_trace(go.Bar(
+        y=[a["iata"] for a in ground_apts],
+        x=[a["_ground_pct"] for a in ground_apts],
+        orientation="h",
+        marker_color=bar_colors,
+        text=[f'{a["_ground_pct"]}%  ({a["on_ground"]}/{a["active"]})' for a in ground_apts],
+        textposition="outside",
+        textfont=dict(color="white", size=11, family="JetBrains Mono"),
+        hovertext=[f"<b>{a['iata']}</b> {a['name']}<br>{a['on_ground']} on ground / {a['active']} active ({a['_ground_pct']}%)" for a in ground_apts],
         hoverinfo="text",
     ))
-    fig_scatter.update_layout(
+    fig_ground.update_layout(
         template="plotly_dark",
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        height=400,
-        font=dict(family="Inter, sans-serif", color="white"),
-        margin=dict(l=50, r=20, t=20, b=50),
-        xaxis=dict(title="Total Active Aircraft", gridcolor="rgba(255,255,255,0.05)"),
-        yaxis=dict(title="% On Ground (higher = more congested)", gridcolor="rgba(255,255,255,0.05)"),
+        height=max(280, len(ground_apts) * 30 + 60),
+        font=dict(family="JetBrains Mono, monospace", color="white"),
+        margin=dict(l=45, r=80, t=10, b=30),
+        xaxis=dict(title="% of Active Aircraft on Ground", range=[0, 105], gridcolor="rgba(255,255,255,0.05)"),
+        yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
     )
-    st.plotly_chart(fig_scatter, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
-    st.caption("Airports in the upper-right are both busy AND have a high proportion of planes stuck on the ground - potential delay hotspots.")
+    st.plotly_chart(fig_ground, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+    st.caption("Higher ground % means more planes sitting at gates or taxiways vs flying. Red bars flag potential delay hotspots.")
 
 # Stacked bar
 st.markdown("---")
