@@ -544,7 +544,7 @@ def _make_gauge(score, title, subtitle=""):
         number=dict(font=dict(size=42, family="JetBrains Mono", color=WHITE), suffix=""),
         title=dict(text=f"<b>{title}</b><br><span style='font-size:11px;color:{SILVER}'>{subtitle}</span>", font=dict(size=14, color=WHITE, family="Inter")),
         gauge=dict(
-            axis=dict(range=[0, 100], tickwidth=0, tickcolor="rgba(0,0,0,0)", tickfont=dict(size=0)),
+            axis=dict(range=[0, 100], tickwidth=0, tickcolor="rgba(0,0,0,0)", tickfont=dict(size=1, color="rgba(0,0,0,0)")),
             bar=dict(color=color, thickness=0.85),
             bgcolor="rgba(255,255,255,0.04)",
             borderwidth=0,
