@@ -244,9 +244,10 @@ with c4:
 with c5:
     st.markdown(f'<div class="metric-card"><div class="metric-value">{ground_pct}%</div><div class="metric-label">On Ground</div></div>', unsafe_allow_html=True)
 with c6:
-    congestion_rate = round(total_ground / total_active * 100) if total_active else 0
-    cong_color = RED if congestion_rate >= 60 else RED_LIGHT if congestion_rate >= 40 else "#2E8B57"
-    st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:{cong_color}">{congestion_rate}%</div><div class="metric-label">Congestion Rate</div></div>', unsafe_allow_html=True)
+    total_airborne = sum(a["airborne"] for a in snapshot["airports"])
+    arrival_pct = round(total_descending / total_airborne * 100) if total_airborne else 0
+    arr_color = RED if arrival_pct >= 60 else RED_LIGHT if arrival_pct >= 40 else WHITE
+    st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:{arr_color}">{total_descending}</div><div class="metric-label">Inbound Now</div></div>', unsafe_allow_html=True)
 
 _src = snapshot.get("source", "OpenSky")
 st.caption(f"Updated: {local_ts}  |  Source: {_src}  |  Refreshes every 2 min")
