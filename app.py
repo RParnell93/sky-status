@@ -294,9 +294,9 @@ current_score = scored["system"]["score"]
 sys_info = scored["system"]
 
 st.markdown("---")
-st.markdown(f'<div class="section-header">Traffic Health Score</div>', unsafe_allow_html=True)
+st.markdown(f'<div class="section-header" style="margin-bottom:0.75rem;">Traffic Health Score</div>', unsafe_allow_html=True)
 
-g1, g2, g3 = st.columns(3)
+g1, g2, g3 = st.columns(3, gap="large")
 with g1:
     _sub = f'{sys_info["healthy"]} healthy, {sys_info["moderate"]} moderate, {sys_info["congested"]} congested'
     st.plotly_chart(_make_gauge(current_score, "NOW", _sub), use_container_width=True, config={"displayModeBar": False})
@@ -751,11 +751,11 @@ def _make_gauge(score, title, subtitle=""):
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=score,
-        number=dict(font=dict(size=42, family="JetBrains Mono", color=WHITE), suffix=""),
-        title=dict(text=f"<b>{title}</b><br><span style='font-size:11px;color:{SILVER}'>{subtitle}</span>", font=dict(size=14, color=WHITE, family="Inter")),
+        number=dict(font=dict(size=48, family="JetBrains Mono", color=WHITE), suffix=""),
+        title=dict(text=f"<b>{title}</b><br><span style='font-size:13px;color:{SILVER}'>{subtitle}</span>", font=dict(size=15, color=WHITE, family="Inter")),
         gauge=dict(
             axis=dict(range=[0, 100], tickwidth=0, tickcolor="rgba(0,0,0,0)", tickfont=dict(size=1, color="rgba(0,0,0,0)")),
-            bar=dict(color=color, thickness=0.85),
+            bar=dict(color=color, thickness=0.75),
             bgcolor="rgba(255,255,255,0.04)",
             borderwidth=0,
             steps=[
@@ -767,15 +767,15 @@ def _make_gauge(score, title, subtitle=""):
         ),
     ))
     fig.add_annotation(
-        x=0.5, y=-0.05, text=label, showarrow=False,
-        font=dict(size=13, color=color, family="Inter", weight=700),
+        x=0.5, y=-0.15, text=label, showarrow=False,
+        font=dict(size=15, color=color, family="Inter", weight=700),
     )
     fig.update_layout(
         template="plotly_dark",
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        height=220,
-        margin=dict(t=50, b=10, l=20, r=20),
+        height=280,
+        margin=dict(t=60, b=30, l=30, r=30),
         font=dict(family="Inter, sans-serif"),
     )
     return fig
