@@ -233,7 +233,8 @@ with c3:
     st.markdown(f'<div class="metric-card"><div class="metric-value">{total_active}</div><div class="metric-label">Near Airports</div></div>', unsafe_allow_html=True)
 with c4:
     if busiest:
-        st.markdown(f'<div class="metric-card"><div class="metric-value">{busiest["iata"]}</div><div class="metric-label">Busiest Right Now</div></div>', unsafe_allow_html=True)
+        busiest_gpct = round(busiest["on_ground"] / busiest["active"] * 100) if busiest["active"] else 0
+        st.markdown(f'<div class="metric-card"><div class="metric-value">{busiest["iata"]}</div><div class="metric-label">Busiest Right Now</div><div style="font-size:0.7em;color:{SILVER};margin-top:6px;font-family:JetBrains Mono,monospace;">{busiest["active"]} active - {busiest_gpct}% on ground</div></div>', unsafe_allow_html=True)
 with c5:
     st.markdown(f'<div class="metric-card"><div class="metric-value">{ground_pct}%</div><div class="metric-label">On Ground</div></div>', unsafe_allow_html=True)
 with c6:
