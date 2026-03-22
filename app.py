@@ -312,21 +312,28 @@ with map_col:
 
         import math
         max_act = max(a["active"] for a in apt_data) or 1
+        ground_pcts = [round(a["on_ground"] / a["active"] * 100) if a["active"] else 0 for a in apt_data]
         fig.add_trace(go.Scattergeo(
             lat=[a["lat"] for a in apt_data],
             lon=[a["lon"] for a in apt_data],
             mode="markers+text",
             marker=dict(
                 size=[8 + 20 * math.log1p(a["active"]) / math.log1p(max_act) for a in apt_data],
-                color=[a["active"] for a in apt_data],
-                colorscale=[[0, NAVY_LIGHT], [0.4, SILVER], [0.7, RED_LIGHT], [1, RED]],
+                color=ground_pcts,
+                colorscale=[[0, "#2E8B57"], [0.4, SILVER], [0.7, RED_LIGHT], [1, RED]],
+                cmin=0, cmax=100,
                 opacity=0.75,
                 line=dict(width=1, color="rgba(255,255,255,0.5)"),
+                colorbar=dict(
+                    title=dict(text="Ground %", font=dict(color=SILVER, size=9)),
+                    tickfont=dict(color=SILVER, size=8),
+                    ticksuffix="%", len=0.5, thickness=10,
+                ),
             ),
             text=[f'{a["iata"]} {a["active"]}' for a in apt_data],
             textposition="top center",
             textfont=dict(size=8, color="white", family="JetBrains Mono"),
-            hovertext=[f"<b>{a['iata']}</b> {a['name']}<br>Active: {a['active']}<br>Ground: {a['on_ground']}<br>Arriving: {a['descending']}  Departing: {a['climbing']}" for a in apt_data],
+            hovertext=[f"<b>{a['iata']}</b> {a['name']}<br>Active: {a['active']} (size)<br>Ground: {a['on_ground']}/{a['active']} = {g}% (color)" for a, g in zip(apt_data, ground_pcts)],
             hoverinfo="text",
             showlegend=False,
         ))
@@ -377,7 +384,8 @@ with ground_col:
             orientation="h",
             marker_color=bar_colors,
             text=[f'{a["_ground_pct"]}% ({a["on_ground"]}/{a["active"]})' for a in ground_apts],
-            textposition="outside",
+            textposition="inside",
+            insidetextanchor="end",
             textfont=dict(color="white", size=10, family="JetBrains Mono"),
             hovertext=[f"<b>{a['iata']}</b> {a['name']}<br>{a['on_ground']} on ground / {a['active']} active ({a['_ground_pct']}%)" for a in ground_apts],
             hoverinfo="text",
@@ -388,8 +396,8 @@ with ground_col:
             plot_bgcolor="rgba(0,0,0,0)",
             height=550,
             font=dict(family="JetBrains Mono, monospace", color="white"),
-            margin=dict(l=45, r=80, t=10, b=30),
-            xaxis=dict(title="% on Ground", range=[0, 105], gridcolor="rgba(255,255,255,0.05)"),
+            margin=dict(l=45, r=15, t=10, b=30),
+            xaxis=dict(title="% on Ground", range=[0, 100], gridcolor="rgba(255,255,255,0.05)", showticklabels=False),
             yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
         )
         st.plotly_chart(fig_ground, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
