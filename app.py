@@ -285,6 +285,172 @@ with c6:
 _src = snapshot.get("source", "OpenSky")
 st.caption(f"Updated: {local_ts}  |  Source: {_src}  |  Refreshes every 2 min")
 
+
+def _score_color(score):
+    if score >= THRESHOLD_GREEN:
+        return SCORE_COLORS["green"]
+    elif score >= THRESHOLD_YELLOW:
+        return SCORE_COLORS["yellow"]
+    return SCORE_COLORS["red"]
+
+
+def _score_label(score):
+    if score >= THRESHOLD_GREEN:
+        return "Healthy"
+    elif score >= THRESHOLD_YELLOW:
+        return "Moderate"
+    return "Congested"
+
+
+def _get_md_token():
+    """Get MotherDuck token from env or Streamlit secrets."""
+    token = os.environ.get("MOTHERDUCK_TOKEN", "")
+    if not token:
+        try:
+            token = st.secrets["MOTHERDUCK_TOKEN"]
+        except (KeyError, FileNotFoundError):
+            pass
+    return token
+
+
+@st.cache_data(ttl=300)
+def _load_all_historical():
+    """Single cached query for baselines, avg scores, and trend data.
+
+    Returns (avg_3d, avg_7d, n_snapshots, baselines, trend_data, airport_hist).
+    Merges what used to be 3 separate MotherDuck connections into 1.
+    """
+    token = _get_md_token()
+    if not token:
+        return None, None, None, {}, None, {}
+    try:
+        import duckdb
+        from datetime import timedelta
+        from collections import defaultdict
+        con = duckdb.connect(f"md:data_viz?motherduck_token={token}")
+
+        snap_rows = con.execute("""
+            SELECT snapshot_time, icao, active, on_ground, airborne,
+                   low_altitude, descending, climbing, total_nearby
+            FROM airport_congestion
+            WHERE snapshot_time >= NOW() - INTERVAL 7 DAY
+            ORDER BY snapshot_time
+        """).fetchall()
+
+        icao_sums = defaultdict(lambda: [0, 0, 0, 0, 0, 0])
+        for r in snap_rows:
+            icao = r[1]
+            s = icao_sums[icao]
+            s[0] += r[3] or 0
+            s[1] += r[2] or 0
+            s[2] += r[5] or 0
+            s[3] += r[6] or 0
+            s[4] += r[7] or 0
+            s[5] += 1
+
+        baseline_rows = []
+        for icao, s in icao_sums.items():
+            n = s[5]
+            if n > 0:
+                baseline_rows.append((icao, s[0]/n, s[1]/n, s[2]/n, s[3]/n, s[4]/n))
+        baselines = compute_historical_baselines(baseline_rows)
+
+        con.close()
+
+        if not snap_rows:
+            return None, None, None, baselines, None, {}
+
+        snapshots = defaultdict(list)
+        for r in snap_rows:
+            snapshots[r[0]].append({
+                "icao": r[1], "active": r[2], "on_ground": r[3],
+                "airborne": r[4], "low_altitude": r[5],
+                "descending": r[6], "climbing": r[7], "total_nearby": r[8],
+            })
+
+        now = datetime.now(timezone.utc)
+        scores_3d = []
+        scores_7d = []
+        trend = []
+        apt_scores = defaultdict(lambda: {"3d": [], "7d": []})
+
+        for snap_time in sorted(snapshots.keys()):
+            airports = snapshots[snap_time]
+            scored_snap = score_snapshot(airports, baselines)
+            sys_score = scored_snap["system"]["score"]
+
+            ts = snap_time if hasattr(snap_time, 'date') else datetime.fromisoformat(str(snap_time))
+            if hasattr(ts, 'tzinfo') and ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age = now - ts
+            scores_7d.append(sys_score)
+            if age <= timedelta(days=3):
+                scores_3d.append(sys_score)
+
+            for apt, sc in scored_snap["airports"]:
+                icao = apt.get("icao", "")
+                apt_scores[icao]["7d"].append(sc["score"])
+                if age <= timedelta(days=3):
+                    apt_scores[icao]["3d"].append(sc["score"])
+
+            trend.append({"time": snap_time, "score": sys_score,
+                          "healthy": scored_snap["system"]["healthy"],
+                          "congested": scored_snap["system"]["congested"]})
+
+        avg_3d = round(sum(scores_3d) / len(scores_3d), 1) if scores_3d else None
+        avg_7d = round(sum(scores_7d) / len(scores_7d), 1) if scores_7d else None
+        n_snapshots = len(scores_7d)
+
+        airport_hist = {}
+        for icao, s in apt_scores.items():
+            airport_hist[icao] = {
+                "avg_3d": round(sum(s["3d"]) / len(s["3d"]), 1) if s["3d"] else None,
+                "avg_7d": round(sum(s["7d"]) / len(s["7d"]), 1) if s["7d"] else None,
+            }
+
+        return avg_3d, avg_7d, n_snapshots, baselines, trend, airport_hist
+    except Exception:
+        return None, None, None, {}, None, {}
+
+
+def _make_gauge(score, title, subtitle=""):
+    """Create a Plotly gauge chart for a health score."""
+    color = _score_color(score)
+    label = _score_label(score)
+
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=score,
+        number=dict(font=dict(size=48, family="JetBrains Mono", color=WHITE), suffix=""),
+        title=dict(text=f"<b>{title}</b><br><span style='font-size:13px;color:{SILVER}'>{subtitle}</span>", font=dict(size=15, color=WHITE, family="Inter")),
+        gauge=dict(
+            axis=dict(range=[0, 100], tickwidth=0, tickcolor="rgba(0,0,0,0)", tickfont=dict(size=1, color="rgba(0,0,0,0)")),
+            bar=dict(color=color, thickness=0.75),
+            bgcolor="rgba(255,255,255,0.04)",
+            borderwidth=0,
+            steps=[
+                dict(range=[0, THRESHOLD_YELLOW], color="rgba(239,68,68,0.08)"),
+                dict(range=[THRESHOLD_YELLOW, THRESHOLD_GREEN], color="rgba(234,179,8,0.06)"),
+                dict(range=[THRESHOLD_GREEN, 100], color="rgba(34,197,94,0.06)"),
+            ],
+            threshold=dict(line=dict(color=WHITE, width=2), thickness=0.85, value=score),
+        ),
+    ))
+    fig.add_annotation(
+        x=0.5, y=-0.15, text=label, showarrow=False,
+        font=dict(size=15, color=color, family="Inter", weight=700),
+    )
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=280,
+        margin=dict(t=60, b=30, l=30, r=30),
+        font=dict(family="Inter, sans-serif"),
+    )
+    return fig
+
+
 # Load historical baselines + scores (single cached query)
 avg_3d, avg_7d, n_hist, hist_baselines, trend_data, airport_hist = _load_all_historical()
 
@@ -607,178 +773,6 @@ def _get_ai_summary(prompt):
         messages=[{"role": "user", "content": prompt}],
     )
     return msg.content[0].text
-
-
-def _score_color(score):
-    if score >= THRESHOLD_GREEN:
-        return SCORE_COLORS["green"]
-    elif score >= THRESHOLD_YELLOW:
-        return SCORE_COLORS["yellow"]
-    return SCORE_COLORS["red"]
-
-
-def _score_label(score):
-    if score >= THRESHOLD_GREEN:
-        return "Healthy"
-    elif score >= THRESHOLD_YELLOW:
-        return "Moderate"
-    return "Congested"
-
-
-def _get_md_token():
-    """Get MotherDuck token from env or Streamlit secrets."""
-    token = os.environ.get("MOTHERDUCK_TOKEN", "")
-    if not token:
-        try:
-            token = st.secrets["MOTHERDUCK_TOKEN"]
-        except (KeyError, FileNotFoundError):
-            pass
-    return token
-
-
-@st.cache_data(ttl=300)
-def _load_all_historical():
-    """Single cached query for baselines, avg scores, and trend data.
-
-    Returns (avg_3d, avg_7d, n_snapshots, baselines, trend_data, airport_hist).
-    Merges what used to be 3 separate MotherDuck connections into 1.
-    """
-    token = _get_md_token()
-    if not token:
-        return None, None, None, {}, None, {}
-    try:
-        import duckdb
-        from datetime import timedelta
-        from collections import defaultdict
-        con = duckdb.connect(f"md:data_viz?motherduck_token={token}")
-
-        # Single query: all 7-day airport data (used for baselines, scoring, and trend)
-        snap_rows = con.execute("""
-            SELECT snapshot_time, icao, active, on_ground, airborne,
-                   low_altitude, descending, climbing, total_nearby
-            FROM airport_congestion
-            WHERE snapshot_time >= NOW() - INTERVAL 7 DAY
-            ORDER BY snapshot_time
-        """).fetchall()
-
-        # Baselines from aggregates (computed in Python to avoid a second query)
-        # Accumulate sums per icao for baseline calculation
-        icao_sums = defaultdict(lambda: [0, 0, 0, 0, 0, 0])  # ground, active, low_alt, desc, climb, count
-        for r in snap_rows:
-            icao = r[1]
-            s = icao_sums[icao]
-            s[0] += r[3] or 0   # on_ground
-            s[1] += r[2] or 0   # active
-            s[2] += r[5] or 0   # low_altitude
-            s[3] += r[6] or 0   # descending
-            s[4] += r[7] or 0   # climbing
-            s[5] += 1
-
-        baseline_rows = []
-        for icao, s in icao_sums.items():
-            n = s[5]
-            if n > 0:
-                baseline_rows.append((icao, s[0]/n, s[1]/n, s[2]/n, s[3]/n, s[4]/n))
-        baselines = compute_historical_baselines(baseline_rows)
-
-        con.close()
-
-        if not snap_rows:
-            return None, None, None, baselines, None, {}
-
-        # Group by snapshot_time
-        snapshots = defaultdict(list)
-        for r in snap_rows:
-            snapshots[r[0]].append({
-                "icao": r[1], "active": r[2], "on_ground": r[3],
-                "airborne": r[4], "low_altitude": r[5],
-                "descending": r[6], "climbing": r[7], "total_nearby": r[8],
-            })
-
-        now = datetime.now(timezone.utc)
-        scores_3d = []
-        scores_7d = []
-        trend = []
-        # Per-airport score accumulation: icao -> {"3d": [...], "7d": [...]}
-        apt_scores = defaultdict(lambda: {"3d": [], "7d": []})
-
-        for snap_time in sorted(snapshots.keys()):
-            airports = snapshots[snap_time]
-            scored_snap = score_snapshot(airports, baselines)
-            sys_score = scored_snap["system"]["score"]
-
-            ts = snap_time if hasattr(snap_time, 'date') else datetime.fromisoformat(str(snap_time))
-            if hasattr(ts, 'tzinfo') and ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-            age = now - ts
-            scores_7d.append(sys_score)
-            if age <= timedelta(days=3):
-                scores_3d.append(sys_score)
-
-            # Track per-airport scores
-            for apt, sc in scored_snap["airports"]:
-                icao = apt.get("icao", "")
-                apt_scores[icao]["7d"].append(sc["score"])
-                if age <= timedelta(days=3):
-                    apt_scores[icao]["3d"].append(sc["score"])
-
-            trend.append({"time": snap_time, "score": sys_score,
-                          "healthy": scored_snap["system"]["healthy"],
-                          "congested": scored_snap["system"]["congested"]})
-
-        avg_3d = round(sum(scores_3d) / len(scores_3d), 1) if scores_3d else None
-        avg_7d = round(sum(scores_7d) / len(scores_7d), 1) if scores_7d else None
-        n_snapshots = len(scores_7d)
-
-        # Compute per-airport averages
-        airport_hist = {}
-        for icao, s in apt_scores.items():
-            airport_hist[icao] = {
-                "avg_3d": round(sum(s["3d"]) / len(s["3d"]), 1) if s["3d"] else None,
-                "avg_7d": round(sum(s["7d"]) / len(s["7d"]), 1) if s["7d"] else None,
-            }
-
-        return avg_3d, avg_7d, n_snapshots, baselines, trend, airport_hist
-    except Exception:
-        return None, None, None, {}, None, {}
-
-
-def _make_gauge(score, title, subtitle=""):
-    """Create a Plotly gauge chart for a health score."""
-    color = _score_color(score)
-    label = _score_label(score)
-
-    fig = go.Figure(go.Indicator(
-        mode="gauge+number",
-        value=score,
-        number=dict(font=dict(size=48, family="JetBrains Mono", color=WHITE), suffix=""),
-        title=dict(text=f"<b>{title}</b><br><span style='font-size:13px;color:{SILVER}'>{subtitle}</span>", font=dict(size=15, color=WHITE, family="Inter")),
-        gauge=dict(
-            axis=dict(range=[0, 100], tickwidth=0, tickcolor="rgba(0,0,0,0)", tickfont=dict(size=1, color="rgba(0,0,0,0)")),
-            bar=dict(color=color, thickness=0.75),
-            bgcolor="rgba(255,255,255,0.04)",
-            borderwidth=0,
-            steps=[
-                dict(range=[0, THRESHOLD_YELLOW], color="rgba(239,68,68,0.08)"),
-                dict(range=[THRESHOLD_YELLOW, THRESHOLD_GREEN], color="rgba(234,179,8,0.06)"),
-                dict(range=[THRESHOLD_GREEN, 100], color="rgba(34,197,94,0.06)"),
-            ],
-            threshold=dict(line=dict(color=WHITE, width=2), thickness=0.85, value=score),
-        ),
-    ))
-    fig.add_annotation(
-        x=0.5, y=-0.15, text=label, showarrow=False,
-        font=dict(size=15, color=color, family="Inter", weight=700),
-    )
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        height=280,
-        margin=dict(t=60, b=30, l=30, r=30),
-        font=dict(family="Inter, sans-serif"),
-    )
-    return fig
 
 
 # Map + Ground Congestion side by side
