@@ -478,7 +478,10 @@ with g3:
         st.markdown(f'<div style="text-align:center;padding:60px 0;color:{SILVER_DARK};font-size:0.85em;">7-day average<br>needs more snapshots</div>', unsafe_allow_html=True)
 
 # Per-airport health score table (sortable)
-display_apts = [(apt, sc) for apt, sc in scored["airports"] if apt.get("active", 0) > 0]
+display_apts = sorted(
+    [(apt, sc) for apt, sc in scored["airports"] if apt.get("active", 0) > 0],
+    key=lambda x: x[1]["score"],
+)
 
 def _bar_color(score):
     """Red -> orange -> yellow -> green gradient for score 0-100."""
@@ -602,6 +605,103 @@ if trend_data and len(trend_data) >= 3:
     st.markdown(f'<div style="margin-top:8px;"><span class="section-header" style="font-size:0.85em;">Health Score Over Time</span></div>', unsafe_allow_html=True)
     st.plotly_chart(fig_trend, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
+# ---------------------------------------------------------------------------
+# AI Summary
+# ---------------------------------------------------------------------------
+
+def _build_sky_prompt(snapshot, ts_str):
+    """Build a structured prompt with all current data for the AI summary."""
+    top10 = snapshot["airports"][:10]
+    total_ac = snapshot["total_us_aircraft"]
+    total_active = sum(a["active"] for a in snapshot["airports"])
+    total_ground = sum(a["on_ground"] for a in snapshot["airports"])
+    total_desc = sum(a["descending"] for a in snapshot["airports"])
+    total_climb = sum(a["climbing"] for a in snapshot["airports"])
+    ground_pct = round(total_ground / total_active * 100) if total_active else 0
+
+    airport_lines = "\n".join(
+        f"  {a['iata']} ({a['name']}): {a['active']} active, "
+        f"{a['on_ground']} ground ({round(a['on_ground']/a['active']*100) if a['active'] else 0}%), "
+        f"{a['descending']} arriving, {a['climbing']} departing"
+        for a in top10
+    )
+
+    high_ground = [a for a in top10 if a["active"] > 0 and a["on_ground"] / a["active"] > 0.7]
+    arrival_heavy = [a for a in top10 if a["descending"] > a["climbing"] * 2 and a["descending"] >= 5]
+    departure_heavy = [a for a in top10 if a["climbing"] > a["descending"] * 2 and a["climbing"] >= 5]
+
+    patterns = []
+    if high_ground:
+        patterns.append(f"High ground congestion (>70%): {', '.join(a['iata'] for a in high_ground)}")
+    if arrival_heavy:
+        patterns.append(f"Arrival-heavy airports: {', '.join(a['iata'] for a in arrival_heavy)}")
+    if departure_heavy:
+        patterns.append(f"Departure-heavy airports: {', '.join(a['iata'] for a in departure_heavy)}")
+
+    pattern_block = "\n".join(f"  - {p}" for p in patterns) if patterns else "  None detected"
+
+    return f"""CURRENT DATA ({ts_str}):
+  Total aircraft over US: {total_ac:,}
+  Total active near airports: {total_active}
+  Overall ground rate: {ground_pct}% ({total_ground} ground / {total_active} active)
+  Total arriving (descending): {total_desc}
+  Total departing (climbing): {total_climb}
+
+TOP 10 AIRPORTS:
+{airport_lines}
+
+NOTABLE PATTERNS:
+{pattern_block}
+
+EXAMPLE OUTPUTS (match this tone and structure):
+
+Example 1 (high ground congestion):
+"ORD leads ground congestion at 71%, with 89 of 125 active aircraft sitting on tarmac, pointing to taxi delays and likely gate holds. ATL and DFW are both running arrival-heavy at 2:1 ratios, pulling in 40+ descending aircraft each while departures lag behind. The system has 4,800 aircraft over US airspace with a 48% overall ground rate, well above the typical mid-afternoon 35%."
+
+Example 2 (balanced, quiet system):
+"US airspace is carrying 3,200 aircraft this Sunday evening, about 20% below weekday averages. ATL tops the board at 95 active but only 33% on the ground, a clean flow with 22 arrivals matching 24 departures. No airport in the top 10 exceeds 40% ground rate, so taxi queues are short across the board."
+
+Example 3 (departure surge):
+"DEN is pushing departures hard with 45 climbing vs. 18 descending, likely a post-bank push from United's hub operation. LAX and SFO show the opposite pattern, each pulling in 30+ arrivals with fewer than 15 departures, consistent with West Coast evening arrival waves. Ground rates are moderate at 38% system-wide across 5,100 tracked aircraft."
+
+Write a 3-4 sentence briefing about the CURRENT DATA above. Match the examples' tone and data density."""
+
+
+_AI_SYSTEM_PROMPT = """You are a concise aviation analyst writing snapshot briefings of US airspace.
+Your audience is informed general readers, like a flight tracker blog or aviation Twitter account.
+Rules:
+- Exactly 3-4 sentences. No more.
+- Lead with the most interesting finding, not a generic overview.
+- Use specific numbers (airport codes, counts, percentages).
+- Compare airports to each other when relevant.
+- If ground rates are high, note traveler impact (delays, taxi queues).
+- If arrival/departure imbalance exists, note it.
+- Present tense. No hedging. State what the data shows.
+- No em dashes. No inflated language. No filler phrases.
+- Sound like a sharp analyst, not a press release."""
+
+
+@st.cache_data(ttl=300)
+def _get_ai_summary(prompt):
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        try:
+            api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+        except Exception:
+            api_key = ""
+    if not api_key:
+        return None
+    client = anthropic.Anthropic(api_key=api_key)
+    msg = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=250,
+        temperature=0.3,
+        system=_AI_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return msg.content[0].text
+
+
 # AI Briefing (auto-triggered)
 if HAS_ANTHROPIC:
     prompt = _build_sky_prompt(snapshot, local_ts)
@@ -690,104 +790,6 @@ st.html(f"""
     {leaderboard_html}
 </div>
 """)
-
-# ---------------------------------------------------------------------------
-# AI Summary
-# ---------------------------------------------------------------------------
-
-def _build_sky_prompt(snapshot, ts_str):
-    """Build a structured prompt with all current data for the AI summary."""
-    top10 = snapshot["airports"][:10]
-    total_ac = snapshot["total_us_aircraft"]
-    total_active = sum(a["active"] for a in snapshot["airports"])
-    total_ground = sum(a["on_ground"] for a in snapshot["airports"])
-    total_desc = sum(a["descending"] for a in snapshot["airports"])
-    total_climb = sum(a["climbing"] for a in snapshot["airports"])
-    ground_pct = round(total_ground / total_active * 100) if total_active else 0
-
-    airport_lines = "\n".join(
-        f"  {a['iata']} ({a['name']}): {a['active']} active, "
-        f"{a['on_ground']} ground ({round(a['on_ground']/a['active']*100) if a['active'] else 0}%), "
-        f"{a['descending']} arriving, {a['climbing']} departing"
-        for a in top10
-    )
-
-    # Find notable patterns
-    high_ground = [a for a in top10 if a["active"] > 0 and a["on_ground"] / a["active"] > 0.7]
-    arrival_heavy = [a for a in top10 if a["descending"] > a["climbing"] * 2 and a["descending"] >= 5]
-    departure_heavy = [a for a in top10 if a["climbing"] > a["descending"] * 2 and a["climbing"] >= 5]
-
-    patterns = []
-    if high_ground:
-        patterns.append(f"High ground congestion (>70%): {', '.join(a['iata'] for a in high_ground)}")
-    if arrival_heavy:
-        patterns.append(f"Arrival-heavy airports: {', '.join(a['iata'] for a in arrival_heavy)}")
-    if departure_heavy:
-        patterns.append(f"Departure-heavy airports: {', '.join(a['iata'] for a in departure_heavy)}")
-
-    pattern_block = "\n".join(f"  - {p}" for p in patterns) if patterns else "  None detected"
-
-    return f"""CURRENT DATA ({ts_str}):
-  Total aircraft over US: {total_ac:,}
-  Total active near airports: {total_active}
-  Overall ground rate: {ground_pct}% ({total_ground} ground / {total_active} active)
-  Total arriving (descending): {total_desc}
-  Total departing (climbing): {total_climb}
-
-TOP 10 AIRPORTS:
-{airport_lines}
-
-NOTABLE PATTERNS:
-{pattern_block}
-
-EXAMPLE OUTPUTS (match this tone and structure):
-
-Example 1 (high ground congestion):
-"ORD leads ground congestion at 71%, with 89 of 125 active aircraft sitting on tarmac, pointing to taxi delays and likely gate holds. ATL and DFW are both running arrival-heavy at 2:1 ratios, pulling in 40+ descending aircraft each while departures lag behind. The system has 4,800 aircraft over US airspace with a 48% overall ground rate, well above the typical mid-afternoon 35%."
-
-Example 2 (balanced, quiet system):
-"US airspace is carrying 3,200 aircraft this Sunday evening, about 20% below weekday averages. ATL tops the board at 95 active but only 33% on the ground, a clean flow with 22 arrivals matching 24 departures. No airport in the top 10 exceeds 40% ground rate, so taxi queues are short across the board."
-
-Example 3 (departure surge):
-"DEN is pushing departures hard with 45 climbing vs. 18 descending, likely a post-bank push from United's hub operation. LAX and SFO show the opposite pattern, each pulling in 30+ arrivals with fewer than 15 departures, consistent with West Coast evening arrival waves. Ground rates are moderate at 38% system-wide across 5,100 tracked aircraft."
-
-Write a 3-4 sentence briefing about the CURRENT DATA above. Match the examples' tone and data density."""
-
-
-_AI_SYSTEM_PROMPT = """You are a concise aviation analyst writing snapshot briefings of US airspace.
-Your audience is informed general readers, like a flight tracker blog or aviation Twitter account.
-Rules:
-- Exactly 3-4 sentences. No more.
-- Lead with the most interesting finding, not a generic overview.
-- Use specific numbers (airport codes, counts, percentages).
-- Compare airports to each other when relevant.
-- If ground rates are high, note traveler impact (delays, taxi queues).
-- If arrival/departure imbalance exists, note it.
-- Present tense. No hedging. State what the data shows.
-- No em dashes. No inflated language. No filler phrases.
-- Sound like a sharp analyst, not a press release."""
-
-
-@st.cache_data(ttl=300)
-def _get_ai_summary(prompt):
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        try:
-            api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
-        except Exception:
-            api_key = ""
-    if not api_key:
-        return None
-    client = anthropic.Anthropic(api_key=api_key)
-    msg = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=250,
-        temperature=0.3,
-        system=_AI_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return msg.content[0].text
-
 
 # Map + Ground Congestion side by side
 st.markdown("---")
