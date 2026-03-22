@@ -489,12 +489,12 @@ def _get_md_token():
 def _load_all_historical():
     """Single cached query for baselines, avg scores, and trend data.
 
-    Returns (avg_3d, avg_7d, n_snapshots, baselines, trend_data).
+    Returns (avg_3d, avg_7d, n_snapshots, baselines, trend_data, airport_hist).
     Merges what used to be 3 separate MotherDuck connections into 1.
     """
     token = _get_md_token()
     if not token:
-        return None, None, None, {}, None
+        return None, None, None, {}, None, {}
     try:
         import duckdb
         from datetime import timedelta
@@ -533,7 +533,7 @@ def _load_all_historical():
         con.close()
 
         if not snap_rows:
-            return None, None, None, baselines, None
+            return None, None, None, baselines, None, {}
 
         # Group by snapshot_time
         snapshots = defaultdict(list)
@@ -548,6 +548,8 @@ def _load_all_historical():
         scores_3d = []
         scores_7d = []
         trend = []
+        # Per-airport score accumulation: icao -> {"3d": [...], "7d": [...]}
+        apt_scores = defaultdict(lambda: {"3d": [], "7d": []})
 
         for snap_time in sorted(snapshots.keys()):
             airports = snapshots[snap_time]
@@ -562,6 +564,13 @@ def _load_all_historical():
             if age <= timedelta(days=3):
                 scores_3d.append(sys_score)
 
+            # Track per-airport scores
+            for apt, sc in scored_snap["airports"]:
+                icao = apt.get("icao", "")
+                apt_scores[icao]["7d"].append(sc["score"])
+                if age <= timedelta(days=3):
+                    apt_scores[icao]["3d"].append(sc["score"])
+
             trend.append({"time": snap_time, "score": sys_score,
                           "healthy": scored_snap["system"]["healthy"],
                           "congested": scored_snap["system"]["congested"]})
@@ -570,9 +579,17 @@ def _load_all_historical():
         avg_7d = round(sum(scores_7d) / len(scores_7d), 1) if scores_7d else None
         n_snapshots = len(scores_7d)
 
-        return avg_3d, avg_7d, n_snapshots, baselines, trend
+        # Compute per-airport averages
+        airport_hist = {}
+        for icao, s in apt_scores.items():
+            airport_hist[icao] = {
+                "avg_3d": round(sum(s["3d"]) / len(s["3d"]), 1) if s["3d"] else None,
+                "avg_7d": round(sum(s["7d"]) / len(s["7d"]), 1) if s["7d"] else None,
+            }
+
+        return avg_3d, avg_7d, n_snapshots, baselines, trend, airport_hist
     except Exception:
-        return None, None, None, {}, None
+        return None, None, None, {}, None, {}
 
 
 def _make_gauge(score, title, subtitle=""):
@@ -614,7 +631,7 @@ def _make_gauge(score, title, subtitle=""):
 
 
 # Load historical baselines + scores (single cached query)
-avg_3d, avg_7d, n_hist, hist_baselines, trend_data = _load_all_historical()
+avg_3d, avg_7d, n_hist, hist_baselines, trend_data, airport_hist = _load_all_historical()
 
 # Score current snapshot using the DS model (with historical baselines if available)
 scored = score_snapshot(snapshot["airports"], hist_baselines)
@@ -639,47 +656,68 @@ with g3:
     else:
         st.markdown(f'<div style="text-align:center;padding:60px 0;color:{SILVER_DARK};font-size:0.85em;">7-day average<br>needs more snapshots</div>', unsafe_allow_html=True)
 
-# Per-airport health score bars (worst first)
+# Per-airport health score table (sortable)
 display_apts = [(apt, sc) for apt, sc in scored["airports"] if apt.get("active", 0) > 0]
 
 if display_apts:
-    fig_health = go.Figure(go.Bar(
-        y=[apt["iata"] for apt, _ in display_apts],
-        x=[sc["score"] for _, sc in display_apts],
-        orientation="h",
-        marker=dict(
-            color=[sc["score"] for _, sc in display_apts],
-            colorscale=[
-                [0, SCORE_COLORS["red"]], [0.4, "#eab308"], [0.7, SCORE_COLORS["green"]], [1, SCORE_COLORS["green"]]
-            ],
-            cmin=0, cmax=100,
-        ),
-        text=[f'{sc["score"]} - {sc["label"]}' for _, sc in display_apts],
-        textposition="inside",
-        insidetextanchor="end",
-        textfont=dict(color="white", size=10, family="JetBrains Mono"),
-        hovertext=[
-            f"<b>{apt['iata']}</b> {apt.get('name','')}<br>"
-            f"Score: {sc['score']} ({sc['label']})<br>"
-            f"Ground: {sc['components']['ground_ratio']['raw']:.0%} (sub: {sc['components']['ground_ratio']['score']:.0f})<br>"
-            f"Flow: {sc['components']['flow_balance']['raw']:.0%} (sub: {sc['components']['flow_balance']['score']:.0f})<br>"
-            f"Low Alt: {sc['components']['low_alt_density']['raw']:.0%} (sub: {sc['components']['low_alt_density']['score']:.0f})"
-            for apt, sc in display_apts
-        ],
-        hoverinfo="text",
-    ))
-    fig_health.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        height=max(300, len(display_apts) * 28 + 60),
-        font=dict(family="JetBrains Mono, monospace", color="white"),
-        margin=dict(l=45, r=15, t=10, b=30),
-        xaxis=dict(title="Health Score", range=[0, 105], gridcolor="rgba(255,255,255,0.05)"),
-        yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+    import pandas as pd
+    table_rows = []
+    for apt, sc in display_apts:
+        icao = apt.get("icao", "")
+        hist = airport_hist.get(icao, {})
+        table_rows.append({
+            "Airport": f'{apt["iata"]}',
+            "Name": apt.get("name", ""),
+            "Now": sc["score"],
+            "Status": sc["label"],
+            "3-Day": hist.get("avg_3d") if hist.get("avg_3d") is not None else None,
+            "7-Day": hist.get("avg_7d") if hist.get("avg_7d") is not None else None,
+            "Ground %": sc["components"]["ground_ratio"]["raw"],
+            "Flow Imbal": sc["components"]["flow_balance"]["raw"],
+            "Low Alt %": sc["components"]["low_alt_density"]["raw"],
+            "Active": apt.get("active", 0),
+        })
+    df_health = pd.DataFrame(table_rows)
+
+    # Color-code scores
+    def _color_score(val):
+        if pd.isna(val):
+            return ""
+        if val >= THRESHOLD_GREEN:
+            return f"background-color: rgba(34,197,94,0.2); color: {SCORE_COLORS['green']}"
+        elif val >= THRESHOLD_YELLOW:
+            return f"background-color: rgba(234,179,8,0.15); color: #eab308"
+        return f"background-color: rgba(239,68,68,0.15); color: {SCORE_COLORS['red']}"
+
+    styled = df_health.style.applymap(
+        _color_score, subset=["Now", "3-Day", "7-Day"]
+    ).format({
+        "Ground %": "{:.0%}",
+        "Flow Imbal": "{:.0%}",
+        "Low Alt %": "{:.0%}",
+        "3-Day": lambda x: f"{x:.0f}" if pd.notna(x) else "-",
+        "7-Day": lambda x: f"{x:.0f}" if pd.notna(x) else "-",
+    })
+
+    st.dataframe(
+        df_health,
+        use_container_width=True,
+        hide_index=True,
+        height=min(600, len(table_rows) * 35 + 40),
+        column_config={
+            "Airport": st.column_config.TextColumn("Airport", width="small"),
+            "Name": st.column_config.TextColumn("Name", width="medium"),
+            "Now": st.column_config.ProgressColumn("Now", min_value=0, max_value=100, format="%d"),
+            "Status": st.column_config.TextColumn("Status", width="small"),
+            "3-Day": st.column_config.ProgressColumn("3-Day Avg", min_value=0, max_value=100, format="%d"),
+            "7-Day": st.column_config.ProgressColumn("7-Day Avg", min_value=0, max_value=100, format="%d"),
+            "Ground %": st.column_config.NumberColumn("Ground %", format="%.0f%%"),
+            "Flow Imbal": st.column_config.NumberColumn("Flow Imbal", format="%.0f%%"),
+            "Low Alt %": st.column_config.NumberColumn("Low Alt %", format="%.0f%%"),
+            "Active": st.column_config.NumberColumn("Active", format="%d"),
+        },
     )
-    st.plotly_chart(fig_health, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
-    st.caption("Score uses ground ratio (40%), low-altitude density (35%), and flow balance (25%). Worst-component drag penalty prevents one good metric from hiding a crisis.")
+    st.caption("Click any column header to sort. Score = ground ratio (40%) + low-alt density (35%) + flow balance (25%).")
 
 # Health Score trend line (from cached historical data)
 if trend_data and len(trend_data) >= 3:
