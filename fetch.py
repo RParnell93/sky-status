@@ -12,16 +12,43 @@ from airports import AIRPORTS
 AIRPORT_RADIUS_KM = 20  # ~10.8 nautical miles
 LOW_ALT_METERS = 3048   # 10,000 feet - aircraft likely arriving/departing
 
-# ICAO callsign prefix -> airline name (major US + international carriers)
+# ICAO callsign prefix -> airline name
+# Major US carriers
 AIRLINE_PREFIXES = {
     "AAL": "American", "DAL": "Delta", "UAL": "United", "SWA": "Southwest",
     "JBU": "JetBlue", "NKS": "Spirit", "FFT": "Frontier", "ASA": "Alaska",
-    "HAL": "Hawaiian", "SKW": "SkyWest", "RPA": "Republic", "ENY": "Envoy",
-    "PDT": "Piedmont", "MES": "Mesa", "GJS": "GoJet", "CPZ": "Compass",
-    "EJA": "NetJets", "FDX": "FedEx", "UPS": "UPS", "GTI": "Atlas Air",
-    "ACA": "Air Canada", "BAW": "British Airways", "DLH": "Lufthansa",
-    "AFR": "Air France", "UAE": "Emirates", "JAL": "JAL", "ANA": "ANA",
-    "QFA": "Qantas", "KLM": "KLM", "ETH": "Ethiopian",
+    "HAL": "Hawaiian", "AAY": "Allegiant", "SCX": "Sun Country",
+    # US regional / feeder
+    "SKW": "SkyWest", "RPA": "Republic", "ENY": "Envoy", "PDT": "Piedmont",
+    "MES": "Mesa", "GJS": "GoJet", "CPZ": "Compass", "AIP": "Alpine Air",
+    "BTA": "Horizon Air", "QXE": "Horizon Air", "JIA": "PSA Airlines",
+    "EDV": "Endeavor", "OPT": "CommutAir", "BRE": "Breeze",
+    # Cargo / freight
+    "FDX": "FedEx", "UPS": "UPS", "GTI": "Atlas Air", "ABX": "ABX Air",
+    "ATN": "ATSG", "KFS": "Kalitta", "PAC": "Polar Air", "CLX": "Cargolux",
+    "GEC": "Lufthansa Cargo", "BOX": "Aerologic", "MPH": "Amerijet",
+    "STZ": "Silverback Cargo",
+    # Private / charter / business
+    "EJA": "NetJets", "LXJ": "Flexjet", "XOJ": "XOJET", "TWY": "Wheels Up",
+    "VNR": "VistaJet", "TCF": "Shuttle America", "JTL": "Jet Linx",
+    # International (common at US airports)
+    "ACA": "Air Canada", "WJA": "WestJet", "BAW": "British Airways",
+    "DLH": "Lufthansa", "AFR": "Air France", "UAE": "Emirates",
+    "JAL": "JAL", "ANA": "ANA", "QFA": "Qantas", "KLM": "KLM",
+    "ETH": "Ethiopian", "AAR": "Asiana", "KAL": "Korean Air",
+    "CPA": "Cathay Pacific", "SIA": "Singapore", "THY": "Turkish",
+    "QTR": "Qatar", "ETD": "Etihad", "TAP": "TAP Portugal",
+    "SAS": "SAS", "FIN": "Finnair", "AUA": "Austrian", "SWR": "Swiss",
+    "IBE": "Iberia", "EIN": "Aer Lingus", "ICE": "Icelandair",
+    "VOI": "Volaris", "VIV": "VivaAerobus", "AMX": "Aeromexico",
+    "CMP": "Copa", "AVA": "Avianca", "ARE": "Aires",
+    "AZU": "Azul", "GLO": "GOL", "TAM": "LATAM",
+    "WZZ": "Wizz Air", "RYR": "Ryanair", "EZY": "easyJet",
+    "VRD": "Virgin Atlantic", "CCA": "Air China", "CES": "China Eastern",
+    "CSN": "China Southern", "EVA": "EVA Air", "CAL": "China Airlines",
+    "PAL": "Philippine", "MAS": "Malaysia",
+    # US military (common over US airspace)
+    "RCH": "USAF", "AIO": "USAF", "CNV": "USAF", "DUKE": "USAF",
 }
 
 
@@ -30,7 +57,13 @@ def parse_airline(callsign):
     if not callsign or len(callsign) < 3:
         return "Other"
     prefix = callsign[:3].upper()
-    return AIRLINE_PREFIXES.get(prefix, "Other")
+    match = AIRLINE_PREFIXES.get(prefix)
+    if match:
+        return match
+    # N-registered aircraft are US private / general aviation
+    if callsign[0] == "N" and callsign[1:2].isdigit():
+        return "Private/GA"
+    return "Other"
 
 
 def haversine_km(lat1, lon1, lat2, lon2):
@@ -97,11 +130,22 @@ def calculate_congestion(aircraft):
         descending = [a for a in airborne if a["vertical_rate"] is not None and a["vertical_rate"] < -1]
         climbing = [a for a in airborne if a["vertical_rate"] is not None and a["vertical_rate"] > 1]
 
-        # Count aircraft by airline
+        # Count aircraft by airline (total + per-status breakdown)
         airline_counts = {}
+        airline_status = {}
         for ac in nearby:
             airline = parse_airline(ac.get("callsign", ""))
             airline_counts[airline] = airline_counts.get(airline, 0) + 1
+            if airline not in airline_status:
+                airline_status[airline] = {"on_ground": 0, "descending": 0, "climbing": 0, "low_alt": 0}
+            if ac["on_ground"]:
+                airline_status[airline]["on_ground"] += 1
+            elif ac.get("vertical_rate") is not None and ac["vertical_rate"] < -1:
+                airline_status[airline]["descending"] += 1
+            elif ac.get("vertical_rate") is not None and ac["vertical_rate"] > 1:
+                airline_status[airline]["climbing"] += 1
+            elif ac.get("alt_m") is not None and ac["alt_m"] < LOW_ALT_METERS:
+                airline_status[airline]["low_alt"] += 1
 
         results.append({
             "icao": apt["icao"],
@@ -118,6 +162,7 @@ def calculate_congestion(aircraft):
             "climbing": len(climbing),
             "active": len(low_alt) + len(on_ground),
             "airlines": airline_counts,
+            "airline_status": airline_status,
             "aircraft": nearby,
         })
 

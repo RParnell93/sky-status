@@ -396,8 +396,7 @@ def _get_md_token():
 def _load_all_historical():
     """Single cached query for baselines, avg scores, and trend data.
 
-    Returns (avg_3d, avg_7d, n_snapshots, baselines, trend_data, airport_hist).
-    Merges what used to be 3 separate MotherDuck connections into 1.
+    Returns (avg_today, avg_3d, n_snapshots, baselines, trend_data, airport_hist).
     """
     token = _get_md_token()
     if not token:
@@ -448,10 +447,10 @@ def _load_all_historical():
             })
 
         now = datetime.now(timezone.utc)
+        scores_today = []
         scores_3d = []
-        scores_7d = []
         trend = []
-        apt_scores = defaultdict(lambda: {"3d": [], "7d": []})
+        apt_scores = defaultdict(lambda: {"today": [], "3d": []})
 
         for snap_time in sorted(snapshots.keys()):
             airports = snapshots[snap_time]
@@ -462,32 +461,34 @@ def _load_all_historical():
             if hasattr(ts, 'tzinfo') and ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
             age = now - ts
-            scores_7d.append(sys_score)
             if age <= timedelta(days=3):
                 scores_3d.append(sys_score)
+            if age <= timedelta(days=1):
+                scores_today.append(sys_score)
 
             for apt, sc in scored_snap["airports"]:
                 icao = apt.get("icao", "")
-                apt_scores[icao]["7d"].append(sc["score"])
                 if age <= timedelta(days=3):
                     apt_scores[icao]["3d"].append(sc["score"])
+                if age <= timedelta(days=1):
+                    apt_scores[icao]["today"].append(sc["score"])
 
             trend.append({"time": snap_time, "score": sys_score,
                           "healthy": scored_snap["system"]["healthy"],
                           "congested": scored_snap["system"]["congested"]})
 
+        avg_today = round(sum(scores_today) / len(scores_today), 1) if scores_today else None
         avg_3d = round(sum(scores_3d) / len(scores_3d), 1) if scores_3d else None
-        avg_7d = round(sum(scores_7d) / len(scores_7d), 1) if scores_7d else None
-        n_snapshots = len(scores_7d)
+        n_snapshots = len(scores_3d) + len(scores_today)
 
         airport_hist = {}
         for icao, s in apt_scores.items():
             airport_hist[icao] = {
+                "avg_today": round(sum(s["today"]) / len(s["today"]), 1) if s["today"] else None,
                 "avg_3d": round(sum(s["3d"]) / len(s["3d"]), 1) if s["3d"] else None,
-                "avg_7d": round(sum(s["7d"]) / len(s["7d"]), 1) if s["7d"] else None,
             }
 
-        return avg_3d, avg_7d, n_snapshots, baselines, trend, airport_hist
+        return avg_today, avg_3d, n_snapshots, baselines, trend, airport_hist
     except Exception:
         return None, None, None, {}, None, {}
 
@@ -531,7 +532,7 @@ def _make_gauge(score, title, subtitle=""):
 
 
 # Load historical baselines + scores (single cached query)
-avg_3d, avg_7d, n_hist, hist_baselines, trend_data, airport_hist = _load_all_historical()
+avg_today, avg_3d, n_hist, hist_baselines, trend_data, airport_hist = _load_all_historical()
 
 # Score current snapshot using the DS model (with historical baselines if available)
 scored = score_snapshot(snapshot["airports"], hist_baselines)
@@ -546,15 +547,15 @@ with g1:
     _sub = f'{sys_info["healthy"]} healthy, {sys_info["moderate"]} moderate, {sys_info["congested"]} congested'
     st.plotly_chart(_make_gauge(current_score, "NOW", _sub), use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 with g2:
+    if avg_today is not None:
+        st.plotly_chart(_make_gauge(avg_today, "TODAY", f"Last 24 hours"), use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+    else:
+        st.markdown(f'<div style="text-align:center;padding:60px 0;color:{SILVER_DARK};font-size:0.85em;">Today average<br>needs more snapshots</div>', unsafe_allow_html=True)
+with g3:
     if avg_3d is not None:
         st.plotly_chart(_make_gauge(avg_3d, "3-DAY AVG", f"{n_hist} snapshots"), use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
     else:
         st.markdown(f'<div style="text-align:center;padding:60px 0;color:{SILVER_DARK};font-size:0.85em;">3-day average<br>needs more snapshots</div>', unsafe_allow_html=True)
-with g3:
-    if avg_7d is not None:
-        st.plotly_chart(_make_gauge(avg_7d, "7-DAY AVG", f"{n_hist} snapshots"), use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
-    else:
-        st.markdown(f'<div style="text-align:center;padding:60px 0;color:{SILVER_DARK};font-size:0.85em;">7-day average<br>needs more snapshots</div>', unsafe_allow_html=True)
 
 # Per-airport health score table (sortable)
 display_apts = sorted(
@@ -604,16 +605,16 @@ if display_apts:
         icao = apt.get("icao", "")
         hist = airport_hist.get(icao, {})
         now_score = sc["score"]
+        avg_today_apt = hist.get("avg_today")
         avg3 = hist.get("avg_3d")
-        avg7 = hist.get("avg_7d")
         status_color = _score_color(now_score)
         health_rows += f'''<tr>
             <td style="{_td_style}font-weight:700;">{apt["iata"]}</td>
             <td style="{_td_style}color:{SILVER};font-family:Inter,sans-serif;">{apt.get("name","")}</td>
             <td style="{_td_style}color:{status_color};font-weight:600;font-size:0.75em;">{sc["label"]}</td>
             <td style="{_td_style}min-width:120px;">{_score_bar_html(now_score)}</td>
+            <td style="{_td_style}min-width:120px;">{_score_bar_html(avg_today_apt)}</td>
             <td style="{_td_style}min-width:120px;">{_score_bar_html(avg3)}</td>
-            <td style="{_td_style}min-width:120px;">{_score_bar_html(avg7)}</td>
             <td style="{_td_style}text-align:right;">{sc["components"]["ground_ratio"]["raw"]:.0%}</td>
             <td style="{_td_style}text-align:right;">{sc["components"]["flow_balance"]["raw"]:.0%}</td>
             <td style="{_td_style}text-align:right;">{sc["components"]["low_alt_density"]["raw"]:.0%}</td>
@@ -636,7 +637,7 @@ if display_apts:
         <thead><tr>
             <th style="{_th_style}">Airport</th><th style="{_th_style}">Name</th>
             <th style="{_th_style}">Status</th><th style="{_th_style}min-width:120px;">Now</th>
-            <th style="{_th_style}min-width:120px;">3-Day Avg</th><th style="{_th_style}min-width:120px;">7-Day Avg</th>
+            <th style="{_th_style}min-width:120px;">Today</th><th style="{_th_style}min-width:120px;">3-Day Avg</th>
             <th style="{_th_style}text-align:right;">Ground %</th><th style="{_th_style}text-align:right;">Flow Imbal</th>
             <th style="{_th_style}text-align:right;">Low Alt %</th><th style="{_th_style}text-align:right;">Active</th>
         </tr></thead>
@@ -804,43 +805,172 @@ if HAS_ANTHROPIC:
             unsafe_allow_html=True,
         )
 
-# Airline filter
-st.markdown("---")
-all_airlines_set = set()
-for apt in snapshot["airports"]:
-    for airline in apt.get("airlines", {}):
-        if airline != "Other":
-            all_airlines_set.add(airline)
-airline_options = ["All Airlines"] + sorted(all_airlines_set)
-selected_airline = st.selectbox("Filter by airline", airline_options, index=0, label_visibility="collapsed")
+# Airport detail via query params (?airport=ATL)
+filtered_airports = snapshot["airports"]
+_qp = st.query_params
+selected_airport_str = _qp.get("airport", "")
+if selected_airport_str:
+    selected_airport_str = selected_airport_str.upper()
 
-# Filter airports if an airline is selected
-if selected_airline != "All Airlines":
-    filtered_airports = []
-    for apt in snapshot["airports"]:
-        airline_count = apt.get("airlines", {}).get(selected_airline, 0)
-        if airline_count > 0:
-            filtered_airports.append({**apt, "_airline_count": airline_count})
-    filtered_airports.sort(key=lambda x: x["_airline_count"], reverse=True)
-else:
-    filtered_airports = snapshot["airports"]
+# ---------------------------------------------------------------------------
+# Airport Detail Card (baseball card view)
+# ---------------------------------------------------------------------------
+if selected_airport_str:
+    _sel_iata = selected_airport_str
+    _sel_apt = next((a for a in snapshot["airports"] if a["iata"] == _sel_iata), None)
+    if _sel_apt:
+        st.markdown("---")
+        if st.button("< Back to Dashboard"):
+            st.query_params.clear()
+            st.rerun()
+        _sel_sc = next((sc for apt, sc in scored["airports"] if apt.get("iata") == _sel_iata), None)
+        _sel_hist = airport_hist.get(_sel_apt.get("icao", ""), {})
+        _sel_score = _sel_sc["score"] if _sel_sc else 0
+        _sel_color = _score_color(_sel_score)
+        _sel_label = _score_label(_sel_score)
+        _ground_pct_card = round(_sel_apt["on_ground"] / _sel_apt["active"] * 100) if _sel_apt["active"] else 0
+
+        # Card header
+        st.markdown(
+            f'<div style="background:linear-gradient(135deg, {NAVY_MID} 0%, {NAVY} 100%);'
+            f'border-radius:12px;border-top:4px solid {RED};padding:24px 28px 20px;margin:12px 0 8px;">'
+            f'<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">'
+            f'<span style="font-family:JetBrains Mono,monospace;font-size:2.4em;font-weight:900;color:{WHITE};">{_sel_apt["iata"]}</span>'
+            f'<div><div style="font-size:1.1em;font-weight:700;color:{WHITE};">{_sel_apt["name"]}</div>'
+            f'<div style="font-size:0.75em;color:{SILVER};margin-top:2px;">{_sel_apt.get("icao","")} | {_sel_apt["active"]} active aircraft</div></div>'
+            f'<div style="margin-left:auto;text-align:right;">'
+            f'<span style="font-family:JetBrains Mono,monospace;font-size:2em;font-weight:900;color:{_sel_color};">{_sel_score:.0f}</span>'
+            f'<div style="font-size:0.7em;color:{_sel_color};font-weight:600;">{_sel_label}</div>'
+            f'</div></div></div>',
+            unsafe_allow_html=True,
+        )
+
+        # Stat row
+        _card_stats = [
+            ("On Ground", str(_sel_apt["on_ground"]), f"{_ground_pct_card}% of active"),
+            ("Airborne", str(_sel_apt["airborne"]), f"{_sel_apt['low_altitude']} below 10k ft"),
+            ("Arriving", str(_sel_apt["descending"]), "Descending now"),
+            ("Departing", str(_sel_apt["climbing"]), "Climbing now"),
+            ("Today Avg", f'{_sel_hist.get("avg_today", "-")}' if _sel_hist.get("avg_today") else "-", "Last 24h score"),
+            ("3-Day Avg", f'{_sel_hist.get("avg_3d", "-")}' if _sel_hist.get("avg_3d") else "-", "Rolling average"),
+        ]
+        _stat_cols = st.columns(len(_card_stats))
+        for _col, (_lbl, _val, _sub) in zip(_stat_cols, _card_stats):
+            with _col:
+                st.markdown(
+                    f'<div class="metric-card" style="padding:12px 8px;">'
+                    f'<div class="metric-value" style="font-size:1.5em;">{_val}</div>'
+                    f'<div class="metric-label">{_lbl}</div>'
+                    f'<div class="metric-sub">{_sub}</div></div>',
+                    unsafe_allow_html=True,
+                )
+
+        # Two columns: Health gauge + Airline donut
+        _card_left, _card_right = st.columns(2)
+        with _card_left:
+            st.markdown(f'<div class="section-header" style="font-size:0.9em;">Health Score</div>', unsafe_allow_html=True)
+            if _sel_sc:
+                _comps = _sel_sc["components"]
+                st.plotly_chart(
+                    _make_gauge(_sel_score, _sel_apt["iata"], _sel_label),
+                    use_container_width=True, config={"displayModeBar": False, "scrollZoom": False},
+                )
+                # Component breakdown
+                _comp_html = ""
+                for _cname, _clabel in [("ground_ratio", "Ground Ratio"), ("low_alt_density", "Low Alt Density"), ("flow_balance", "Flow Balance")]:
+                    _c = _comps[_cname]
+                    _ccolor = _bar_color(_c["score"])
+                    _comp_html += (
+                        f'<div style="display:flex;align-items:center;gap:8px;margin:4px 0;">'
+                        f'<span style="min-width:100px;font-size:0.7em;color:{SILVER};font-family:Inter,sans-serif;">{_clabel}</span>'
+                        f'<div style="flex:1;height:6px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden;">'
+                        f'<div style="width:{_c["score"]}%;height:100%;background:{_ccolor};border-radius:3px;"></div></div>'
+                        f'<span style="min-width:32px;text-align:right;font-family:JetBrains Mono,monospace;font-size:0.75em;color:{_ccolor};">{_c["score"]:.0f}</span></div>'
+                    )
+                st.markdown(_comp_html, unsafe_allow_html=True)
+
+        with _card_right:
+            st.markdown(f'<div class="section-header" style="font-size:0.9em;">Airline Mix</div>', unsafe_allow_html=True)
+            _airlines = _sel_apt.get("airlines", {})
+            if _airlines:
+                _sorted_al = sorted(_airlines.items(), key=lambda x: -x[1])
+                _al_labels = [a[0] for a in _sorted_al[:8]]
+                _al_values = [a[1] for a in _sorted_al[:8]]
+                if len(_sorted_al) > 8:
+                    _al_labels.append("Other")
+                    _al_values.append(sum(a[1] for a in _sorted_al[8:]))
+                AIRLINE_COLORS = {
+                    "Delta": "#C8102E", "American": "#0078D2", "United": "#002244",
+                    "Southwest": "#F9B612", "JetBlue": "#003DA5", "Spirit": "#FFD200",
+                    "Frontier": "#006847", "Alaska": "#01426A", "Hawaiian": "#2D1E5B",
+                    "SkyWest": "#8B9DAF", "FedEx": "#660099", "UPS": "#351C15",
+                    "Private/GA": "#5C6F82",
+                }
+                _al_colors = [AIRLINE_COLORS.get(n, SILVER_DARK) for n in _al_labels]
+                _fig_donut_apt = go.Figure(go.Pie(
+                    labels=_al_labels, values=_al_values, hole=0.5,
+                    marker=dict(colors=_al_colors),
+                    textinfo="label+value",
+                    textfont=dict(size=10, family="JetBrains Mono"),
+                    hoverinfo="label+value+percent",
+                ))
+                _fig_donut_apt.update_layout(
+                    template="plotly_dark",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    height=320,
+                    margin=dict(t=10, b=10, l=10, r=10),
+                    font=dict(family="Inter, sans-serif", color="white"),
+                    showlegend=False,
+                    annotations=[dict(
+                        text=f"<b>{sum(_al_values)}</b><br><span style='font-size:9px'>aircraft</span>",
+                        x=0.5, y=0.5, font_size=20, showarrow=False,
+                        font=dict(color="white", family="JetBrains Mono"),
+                    )],
+                )
+                st.plotly_chart(_fig_donut_apt, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+
+        # Arrival/Departure flow mini chart
+        if _sel_apt["descending"] + _sel_apt["climbing"] > 0:
+            st.markdown(f'<div class="section-header" style="font-size:0.9em;">Traffic Flow</div>', unsafe_allow_html=True)
+            _fig_flow_apt = go.Figure()
+            _cats = ["Arriving", "Departing", "On Ground", "In Pattern"]
+            _pattern = max(0, _sel_apt["airborne"] - _sel_apt["descending"] - _sel_apt["climbing"])
+            _vals = [_sel_apt["descending"], _sel_apt["climbing"], _sel_apt["on_ground"], _pattern]
+            _colors = [RED, "#2E8B57", NAVY_LIGHT, SILVER]
+            _fig_flow_apt.add_trace(go.Bar(
+                x=_cats, y=_vals,
+                marker_color=_colors,
+                text=_vals, textposition="outside",
+                textfont=dict(color="white", size=12, family="JetBrains Mono"),
+                hoverinfo="none",
+            ))
+            _fig_flow_apt.update_layout(
+                template="plotly_dark",
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                height=250,
+                font=dict(family="JetBrains Mono, monospace", color="white"),
+                margin=dict(l=20, r=20, t=10, b=40),
+                yaxis=dict(gridcolor="rgba(255,255,255,0.05)", title="Aircraft"),
+            )
+            st.plotly_chart(_fig_flow_apt, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+
+        st.markdown("---")
+        st.stop()  # Don't render the main dashboard when viewing an airport card
 
 # Congestion Leaderboard
 st.markdown('<div class="section-header">Airport Congestion Leaderboard</div>', unsafe_allow_html=True)
 
 _lb_airports = filtered_airports[:20]
-_lb_key = "_airline_count" if selected_airline != "All Airlines" else "active"
-max_active = max((a[_lb_key] for a in _lb_airports), default=1) or 1
+max_active = max((a["active"] for a in _lb_airports), default=1) or 1
 
 leaderboard_html = ""
 for i, apt in enumerate(_lb_airports, 1):
-    pct = (apt[_lb_key] / max_active) * 100
+    pct = (apt["active"] / max_active) * 100
     rank_class = "gold" if i == 1 else "silver" if i == 2 else "bronze" if i == 3 else ""
     row_class = f"top-{i}" if i <= 3 else ""
-    if selected_airline != "All Airlines":
-        detail = f'{apt.get("_airline_count", 0)} {selected_airline} / {apt["active"]} total'
-    else:
-        detail = f'{apt["on_ground"]}g {apt["low_altitude"]}l {apt["descending"]}d {apt["climbing"]}c'
+    detail = f'{apt["on_ground"]}g {apt["low_altitude"]}l {apt["descending"]}d {apt["climbing"]}c'
     # Smooth color blend: navy -> silver -> red based on pct
     t = pct / 100
     if t < 0.5:
@@ -856,14 +986,15 @@ for i, apt in enumerate(_lb_airports, 1):
     bar_color = f"rgb({r},{g},{b})"
 
     leaderboard_html += f"""
-    <div class="leaderboard-row {row_class}">
+    <a href="?airport={apt['iata']}" style="text-decoration:none;color:inherit;display:block;">
+    <div class="leaderboard-row {row_class}" style="cursor:pointer;">
         <div class="lb-rank {rank_class}">{i}</div>
         <div class="lb-iata">{apt['iata']}</div>
         <div class="lb-name">{apt['name']}</div>
         <div class="lb-bar-bg"><div class="lb-bar" style="width:{max(pct, 2)}%;background:{bar_color};"></div></div>
-        <div class="lb-count">{apt.get('_airline_count', apt['active']) if selected_airline != 'All Airlines' else apt['active']}</div>
+        <div class="lb-count">{apt['active']}</div>
         <div class="lb-detail">{detail}</div>
-    </div>"""
+    </div></a>"""
 
 st.html(f"""
 <style>
@@ -1136,53 +1267,74 @@ if top_airports:
     )
     st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
-# Airline breakdown
-all_airlines = {}
+# Airline breakdown (stacked by status)
+all_airline_status = {}
 for apt in snapshot["airports"]:
-    for airline, count in apt.get("airlines", {}).items():
-        all_airlines[airline] = all_airlines.get(airline, 0) + count
+    for airline, stats in apt.get("airline_status", {}).items():
+        if airline not in all_airline_status:
+            all_airline_status[airline] = {"on_ground": 0, "descending": 0, "climbing": 0, "low_alt": 0}
+        for k in ("on_ground", "descending", "climbing", "low_alt"):
+            all_airline_status[airline][k] += stats.get(k, 0)
 
-if all_airlines:
+# Fallback: if no airline_status data (MotherDuck cached), use simple counts
+if not all_airline_status:
+    all_airlines = {}
+    for apt in snapshot["airports"]:
+        for airline, count in apt.get("airlines", {}).items():
+            all_airlines[airline] = all_airlines.get(airline, 0) + count
+    for airline, count in all_airlines.items():
+        all_airline_status[airline] = {"on_ground": count, "descending": 0, "climbing": 0, "low_alt": 0}
+
+if all_airline_status:
     st.markdown("---")
     st.markdown(f'<div class="section-header">Airline Breakdown</div>', unsafe_allow_html=True)
 
-    # Sort and take top 12, group the rest as "Other"
-    sorted_airlines = sorted(all_airlines.items(), key=lambda x: -x[1])
+    # Sort by total, take top 12
+    _airline_totals = {a: sum(s.values()) for a, s in all_airline_status.items()}
+    sorted_airlines = sorted(_airline_totals.items(), key=lambda x: -x[1])
     top_n = 12
-    top_airlines = sorted_airlines[:top_n]
-    other_count = sum(c for _, c in sorted_airlines[top_n:])
-    existing_other = next((c for name, c in top_airlines if name == "Other"), 0)
-    top_airlines = [(name, c) for name, c in top_airlines if name != "Other"]
-    if other_count + existing_other > 0:
-        top_airlines.append(("Other", other_count + existing_other))
-    top_airlines.sort(key=lambda x: x[1])
+    top_names = [name for name, _ in sorted_airlines[:top_n] if name != "Other"]
 
-    # Assign colors - major carriers get brand colors
-    AIRLINE_COLORS = {
-        "Delta": "#C8102E", "American": "#0078D2", "United": "#002244",
-        "Southwest": "#F9B612", "JetBlue": "#003DA5", "Spirit": "#FFD200",
-        "Frontier": "#006847", "Alaska": "#01426A", "Hawaiian": "#2D1E5B",
-        "SkyWest": "#8B9DAF", "FedEx": "#660099", "UPS": "#351C15",
-    }
-    bar_colors = [AIRLINE_COLORS.get(name, SILVER_DARK) for name, _ in top_airlines]
+    # Merge everything else into Other
+    other_status = {"on_ground": 0, "descending": 0, "climbing": 0, "low_alt": 0}
+    for name, _ in sorted_airlines:
+        if name not in top_names:
+            for k in other_status:
+                other_status[k] += all_airline_status[name].get(k, 0)
+    if sum(other_status.values()) > 0:
+        top_names.append("Other")
+        all_airline_status["Other"] = other_status
 
-    fig_airline = go.Figure(go.Bar(
-        y=[name for name, _ in top_airlines],
-        x=[count for _, count in top_airlines],
-        orientation="h",
-        marker_color=bar_colors,
-        text=[count for _, count in top_airlines],
-        textposition="outside",
-        textfont=dict(color="white", size=10, family="JetBrains Mono"),
-        hoverinfo="none",
-    ))
+    # Sort ascending for horizontal bar (bottom = biggest)
+    top_names.sort(key=lambda n: sum(all_airline_status[n].values()))
+
+    fig_airline = go.Figure()
+    _status_config = [
+        ("on_ground", "On Ground", NAVY_LIGHT),
+        ("low_alt", "Low Altitude", SILVER),
+        ("descending", "Arriving", RED),
+        ("climbing", "Departing", "#2E8B57"),
+    ]
+    for _key, _label, _color in _status_config:
+        _vals = [all_airline_status[n].get(_key, 0) for n in top_names]
+        fig_airline.add_trace(go.Bar(
+            y=top_names, x=_vals,
+            name=_label, orientation="h",
+            marker_color=_color,
+            text=[v if v > 0 else "" for v in _vals],
+            textposition="inside",
+            textfont=dict(color="white", size=9, family="JetBrains Mono"),
+            hoverinfo="none",
+        ))
     fig_airline.update_layout(
+        barmode="stack",
         template="plotly_dark",
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        height=max(280, len(top_airlines) * 30 + 60),
+        height=max(300, len(top_names) * 32 + 80),
         font=dict(family="JetBrains Mono, monospace", color="white"),
-        margin=dict(l=80, r=40, t=10, b=30),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5, font=dict(size=10)),
+        margin=dict(l=80, r=20, t=40, b=30),
         xaxis=dict(title="Aircraft Near Airports", gridcolor="rgba(255,255,255,0.05)"),
         yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
     )
