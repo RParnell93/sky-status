@@ -238,7 +238,9 @@ with c4:
 with c5:
     st.markdown(f'<div class="metric-card"><div class="metric-value">{ground_pct}%</div><div class="metric-label">On Ground</div></div>', unsafe_allow_html=True)
 with c6:
-    st.markdown(f'<div class="metric-card"><div class="metric-value">{total_descending}</div><div class="metric-label">Inbound Now</div></div>', unsafe_allow_html=True)
+    congestion_rate = round(total_ground / total_active * 100) if total_active else 0
+    cong_color = RED if congestion_rate >= 60 else RED_LIGHT if congestion_rate >= 40 else "#2E8B57"
+    st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:{cong_color}">{congestion_rate}%</div><div class="metric-label">Congestion Rate</div></div>', unsafe_allow_html=True)
 
 _src = snapshot.get("source", "OpenSky")
 st.caption(f"Updated: {local_ts}  |  Source: {_src}  |  Refreshes every 2 min")
