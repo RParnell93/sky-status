@@ -353,12 +353,15 @@ col_left, col_right = st.columns(2)
 
 with col_left:
     st.markdown(f'<div class="section-header">Ground vs Airborne</div>', unsafe_allow_html=True)
-    total_low_alt = sum(a["low_altitude"] for a in snapshot["airports"])
+    total_airborne = sum(a["airborne"] for a in snapshot["airports"])
+    total_level = total_airborne - total_descending - total_climbing
+    if total_level < 0:
+        total_level = 0
     fig_donut = go.Figure(go.Pie(
-        labels=["On Ground", "Low Altitude", "Descending", "Climbing"],
-        values=[total_ground, total_low_alt, total_descending, total_climbing],
+        labels=["On Ground", "Arriving", "Departing", "In Pattern"],
+        values=[total_ground, total_descending, total_climbing, total_level],
         hole=0.55,
-        marker=dict(colors=[NAVY_LIGHT, SILVER, RED, "#2E8B57"]),
+        marker=dict(colors=[NAVY_LIGHT, RED, "#2E8B57", SILVER]),
         textinfo="label+value",
         textfont=dict(size=11, family="JetBrains Mono"),
         hoverinfo="label+value+percent",
