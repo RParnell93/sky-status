@@ -255,15 +255,27 @@ for i, apt in enumerate(snapshot["airports"][:20], 1):
     pct = (apt["active"] / max_active) * 100
     rank_class = "gold" if i == 1 else "silver" if i == 2 else "bronze" if i == 3 else ""
     row_class = f"top-{i}" if i <= 3 else ""
-    bar_class = "hot" if pct > 70 else "warm" if pct > 40 else ""
     detail = f'{apt["on_ground"]}g {apt["low_altitude"]}l {apt["descending"]}d {apt["climbing"]}c'
+    # Smooth color blend: navy -> silver -> red based on pct
+    t = pct / 100
+    if t < 0.5:
+        s = t / 0.5
+        r = int(10 + (139 - 10) * s)
+        g = int(74 + (157 - 74) * s)
+        b = int(122 + (175 - 122) * s)
+    else:
+        s = (t - 0.5) / 0.5
+        r = int(139 + (200 - 139) * s)
+        g = int(157 + (16 - 157) * s)
+        b = int(175 + (46 - 175) * s)
+    bar_color = f"rgb({r},{g},{b})"
 
     leaderboard_html += f"""
     <div class="leaderboard-row {row_class}">
         <div class="lb-rank {rank_class}">{i}</div>
         <div class="lb-iata">{apt['iata']}</div>
         <div class="lb-name">{apt['name']}</div>
-        <div class="lb-bar-bg"><div class="lb-bar {bar_class}" style="width:{max(pct, 2)}%;"></div></div>
+        <div class="lb-bar-bg"><div class="lb-bar" style="width:{max(pct, 2)}%;background:{bar_color};"></div></div>
         <div class="lb-count">{apt['active']}</div>
         <div class="lb-detail">{detail}</div>
     </div>"""
