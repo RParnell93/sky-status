@@ -326,7 +326,7 @@ if apt_data:
         showlakes=True,
         coastlinecolor=SILVER_DARK,
         countrycolor=SILVER_DARK,
-        subunitcolor=f"{SILVER_DARK}44",
+        subunitcolor="rgba(92,111,130,0.27)",
     )
     fig.update_layout(
         template="plotly_dark",
