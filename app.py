@@ -136,6 +136,22 @@ CSS = f"""
     /* Override Streamlit defaults for dark navy bg */
     .stCaption {{ color: {SILVER_DARK} !important; }}
     [data-testid="stExpander"] {{ border-color: rgba(255,255,255,0.06) !important; }}
+
+    /* Mobile responsiveness */
+    @media (max-width: 768px) {{
+        .sky-title {{ font-size: clamp(1.3rem, 4vw, 2.2rem); letter-spacing: 1px; }}
+        .sky-subtitle {{ font-size: 0.7em; }}
+        .metric-card {{ padding: 12px 8px; }}
+        .metric-value {{ font-size: clamp(1.3rem, 5vw, 2em); }}
+        .metric-label {{ font-size: 0.55em; letter-spacing: 1px; }}
+        .metric-sub {{ font-size: 0.5em; }}
+        .leaderboard-row {{ padding: 8px 10px; gap: 8px; }}
+        .lb-name {{ display: none; }}
+        .lb-detail {{ font-size: 0.5em; min-width: 60px; }}
+        .lb-bar-bg {{ min-width: 60px; }}
+        .section-header {{ font-size: 0.9em; }}
+        div[data-testid="stHorizontalBlock"] {{ gap: 0.5rem !important; }}
+    }}
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -181,7 +197,17 @@ def _load_from_motherduck():
             WHERE snapshot_time = ?
             ORDER BY active DESC
         """, [snap_time]).fetchall()
+        # Load airline breakdown for this snapshot
+        airline_rows = con.execute("""
+            SELECT icao, airline, count
+            FROM airport_airlines
+            WHERE snapshot_time = ?
+        """, [snap_time]).fetchall()
         con.close()
+        # Build airline lookup: icao -> {airline: count}
+        airline_lookup = {}
+        for ar in airline_rows:
+            airline_lookup.setdefault(ar[0], {})[ar[1]] = ar[2]
         airports = []
         for r in rows:
             airports.append({
@@ -191,6 +217,7 @@ def _load_from_motherduck():
                 "active": r[3], "on_ground": r[4], "airborne": r[5],
                 "low_altitude": r[6], "descending": r[7], "climbing": r[8],
                 "total_nearby": r[9], "aircraft": [],
+                "airlines": airline_lookup.get(r[0], {}),
             })
         return {
             "timestamp": snap_time if isinstance(snap_time, str) else snap_time.isoformat(),
@@ -214,6 +241,11 @@ def load_snapshot():
     return data
 
 from airports import AIRPORTS
+from health_score import (
+    score_snapshot, score_color_hex, compute_historical_baselines,
+    airport_health_score, system_health_score, SCORE_COLORS,
+    THRESHOLD_GREEN, THRESHOLD_YELLOW,
+)
 
 with st.spinner("Loading airport data..."):
     snapshot = load_snapshot()
@@ -253,17 +285,194 @@ with c6:
 _src = snapshot.get("source", "OpenSky")
 st.caption(f"Updated: {local_ts}  |  Source: {_src}  |  Refreshes every 2 min")
 
+# Load historical baselines + scores (single cached query)
+avg_3d, avg_7d, n_hist, hist_baselines, trend_data, airport_hist = _load_all_historical()
+
+# Score current snapshot using the DS model (with historical baselines if available)
+scored = score_snapshot(snapshot["airports"], hist_baselines)
+current_score = scored["system"]["score"]
+sys_info = scored["system"]
+
+st.markdown("---")
+st.markdown(f'<div class="section-header">Traffic Health Score</div>', unsafe_allow_html=True)
+
+g1, g2, g3 = st.columns(3)
+with g1:
+    _sub = f'{sys_info["healthy"]} healthy, {sys_info["moderate"]} moderate, {sys_info["congested"]} congested'
+    st.plotly_chart(_make_gauge(current_score, "NOW", _sub), use_container_width=True, config={"displayModeBar": False})
+with g2:
+    if avg_3d is not None:
+        st.plotly_chart(_make_gauge(avg_3d, "3-DAY AVG", f"{n_hist} snapshots"), use_container_width=True, config={"displayModeBar": False})
+    else:
+        st.markdown(f'<div style="text-align:center;padding:60px 0;color:{SILVER_DARK};font-size:0.85em;">3-day average<br>needs more snapshots</div>', unsafe_allow_html=True)
+with g3:
+    if avg_7d is not None:
+        st.plotly_chart(_make_gauge(avg_7d, "7-DAY AVG", f"{n_hist} snapshots"), use_container_width=True, config={"displayModeBar": False})
+    else:
+        st.markdown(f'<div style="text-align:center;padding:60px 0;color:{SILVER_DARK};font-size:0.85em;">7-day average<br>needs more snapshots</div>', unsafe_allow_html=True)
+
+# Per-airport health score table (sortable)
+display_apts = [(apt, sc) for apt, sc in scored["airports"] if apt.get("active", 0) > 0]
+
+if display_apts:
+    import pandas as pd
+    table_rows = []
+    for apt, sc in display_apts:
+        icao = apt.get("icao", "")
+        hist = airport_hist.get(icao, {})
+        table_rows.append({
+            "Airport": f'{apt["iata"]}',
+            "Name": apt.get("name", ""),
+            "Now": sc["score"],
+            "Status": sc["label"],
+            "3-Day": hist.get("avg_3d") if hist.get("avg_3d") is not None else None,
+            "7-Day": hist.get("avg_7d") if hist.get("avg_7d") is not None else None,
+            "Ground %": sc["components"]["ground_ratio"]["raw"],
+            "Flow Imbal": sc["components"]["flow_balance"]["raw"],
+            "Low Alt %": sc["components"]["low_alt_density"]["raw"],
+            "Active": apt.get("active", 0),
+        })
+    df_health = pd.DataFrame(table_rows)
+
+    # Color-code scores
+    def _color_score(val):
+        if pd.isna(val):
+            return ""
+        if val >= THRESHOLD_GREEN:
+            return f"background-color: rgba(34,197,94,0.2); color: {SCORE_COLORS['green']}"
+        elif val >= THRESHOLD_YELLOW:
+            return f"background-color: rgba(234,179,8,0.15); color: #eab308"
+        return f"background-color: rgba(239,68,68,0.15); color: {SCORE_COLORS['red']}"
+
+    styled = df_health.style.applymap(
+        _color_score, subset=["Now", "3-Day", "7-Day"]
+    ).format({
+        "Ground %": "{:.0%}",
+        "Flow Imbal": "{:.0%}",
+        "Low Alt %": "{:.0%}",
+        "3-Day": lambda x: f"{x:.0f}" if pd.notna(x) else "-",
+        "7-Day": lambda x: f"{x:.0f}" if pd.notna(x) else "-",
+    })
+
+    st.dataframe(
+        df_health,
+        use_container_width=True,
+        hide_index=True,
+        height=min(600, len(table_rows) * 35 + 40),
+        column_config={
+            "Airport": st.column_config.TextColumn("Airport", width="small"),
+            "Name": st.column_config.TextColumn("Name", width="medium"),
+            "Now": st.column_config.ProgressColumn("Now", min_value=0, max_value=100, format="%d"),
+            "Status": st.column_config.TextColumn("Status", width="small"),
+            "3-Day": st.column_config.ProgressColumn("3-Day Avg", min_value=0, max_value=100, format="%d"),
+            "7-Day": st.column_config.ProgressColumn("7-Day Avg", min_value=0, max_value=100, format="%d"),
+            "Ground %": st.column_config.NumberColumn("Ground %", format="%.0f%%"),
+            "Flow Imbal": st.column_config.NumberColumn("Flow Imbal", format="%.0f%%"),
+            "Low Alt %": st.column_config.NumberColumn("Low Alt %", format="%.0f%%"),
+            "Active": st.column_config.NumberColumn("Active", format="%d"),
+        },
+    )
+    st.caption("Click any column header to sort. Score = ground ratio (40%) + low-alt density (35%) + flow balance (25%).")
+
+# Health Score trend line (from cached historical data)
+if trend_data and len(trend_data) >= 3:
+    fig_trend = go.Figure()
+    times = [t["time"] for t in trend_data]
+    scores = [t["score"] for t in trend_data]
+
+    fig_trend.add_trace(go.Scatter(
+        x=times, y=scores,
+        mode="lines+markers",
+        line=dict(color=SILVER, width=2),
+        marker=dict(
+            size=8,
+            color=scores,
+            colorscale=[
+                [0, SCORE_COLORS["red"]], [0.4, "#eab308"],
+                [0.7, SCORE_COLORS["green"]], [1, SCORE_COLORS["green"]]
+            ],
+            cmin=0, cmax=100,
+            line=dict(width=1, color="rgba(255,255,255,0.3)"),
+        ),
+        hovertemplate="<b>%{x|%b %d %I:%M %p}</b><br>Score: %{y}<extra></extra>",
+        showlegend=False,
+    ))
+
+    fig_trend.add_hrect(y0=THRESHOLD_GREEN, y1=100, fillcolor="rgba(34,197,94,0.05)", line_width=0)
+    fig_trend.add_hrect(y0=THRESHOLD_YELLOW, y1=THRESHOLD_GREEN, fillcolor="rgba(234,179,8,0.04)", line_width=0)
+    fig_trend.add_hrect(y0=0, y1=THRESHOLD_YELLOW, fillcolor="rgba(239,68,68,0.04)", line_width=0)
+
+    fig_trend.add_hline(y=THRESHOLD_GREEN, line=dict(color="rgba(34,197,94,0.3)", width=1, dash="dot"),
+                        annotation_text="Healthy", annotation_position="right",
+                        annotation_font=dict(size=9, color="rgba(34,197,94,0.5)"))
+    fig_trend.add_hline(y=THRESHOLD_YELLOW, line=dict(color="rgba(234,179,8,0.3)", width=1, dash="dot"),
+                        annotation_text="Moderate", annotation_position="right",
+                        annotation_font=dict(size=9, color="rgba(234,179,8,0.5)"))
+
+    fig_trend.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=280,
+        font=dict(family="JetBrains Mono, monospace", color="white"),
+        margin=dict(l=40, r=60, t=10, b=30),
+        xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+        yaxis=dict(title="Score", range=[0, 105], gridcolor="rgba(255,255,255,0.05)"),
+    )
+    st.markdown(f'<div style="margin-top:8px;"><span class="section-header" style="font-size:0.85em;">Health Score Over Time</span></div>', unsafe_allow_html=True)
+    st.plotly_chart(fig_trend, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+
+# AI Briefing (auto-triggered)
+if HAS_ANTHROPIC:
+    prompt = _build_sky_prompt(snapshot, local_ts)
+    summary = _get_ai_summary(prompt)
+    if summary:
+        st.markdown(
+            f'<div style="background:linear-gradient(135deg, {NAVY_MID} 0%, {NAVY} 100%); '
+            f'padding:1rem 1.5rem; border-radius:8px; border-left:3px solid {RED}; '
+            f'margin:0.5rem 0 1rem 0;">'
+            f'<span style="color:{WHITE}; font-size:0.92rem; line-height:1.7; font-family:Inter,sans-serif;">'
+            f'{summary}</span></div>',
+            unsafe_allow_html=True,
+        )
+
+# Airline filter
+st.markdown("---")
+all_airlines_set = set()
+for apt in snapshot["airports"]:
+    for airline in apt.get("airlines", {}):
+        if airline != "Other":
+            all_airlines_set.add(airline)
+airline_options = ["All Airlines"] + sorted(all_airlines_set)
+selected_airline = st.selectbox("Filter by airline", airline_options, index=0, label_visibility="collapsed")
+
+# Filter airports if an airline is selected
+if selected_airline != "All Airlines":
+    filtered_airports = []
+    for apt in snapshot["airports"]:
+        airline_count = apt.get("airlines", {}).get(selected_airline, 0)
+        if airline_count > 0:
+            filtered_airports.append({**apt, "_airline_count": airline_count})
+    filtered_airports.sort(key=lambda x: x["_airline_count"], reverse=True)
+else:
+    filtered_airports = snapshot["airports"]
+
 # Congestion Leaderboard
 st.markdown('<div class="section-header">Airport Congestion Leaderboard</div>', unsafe_allow_html=True)
 
-max_active = max((a["active"] for a in snapshot["airports"]), default=1) or 1
+_lb_airports = filtered_airports[:20]
+_lb_key = "_airline_count" if selected_airline != "All Airlines" else "active"
+max_active = max((a[_lb_key] for a in _lb_airports), default=1) or 1
 
 leaderboard_html = ""
-for i, apt in enumerate(snapshot["airports"][:20], 1):
-    pct = (apt["active"] / max_active) * 100
+for i, apt in enumerate(_lb_airports, 1):
+    pct = (apt[_lb_key] / max_active) * 100
     rank_class = "gold" if i == 1 else "silver" if i == 2 else "bronze" if i == 3 else ""
     row_class = f"top-{i}" if i <= 3 else ""
-    detail = f'{apt["on_ground"]}g {apt["low_altitude"]}l {apt["descending"]}d {apt["climbing"]}c'
+    if selected_airline != "All Airlines":
+        detail = f'{apt.get("_airline_count", 0)} {selected_airline} / {apt["active"]} total'
+    else:
+        detail = f'{apt["on_ground"]}g {apt["low_altitude"]}l {apt["descending"]}d {apt["climbing"]}c'
     # Smooth color blend: navy -> silver -> red based on pct
     t = pct / 100
     if t < 0.5:
@@ -284,7 +493,7 @@ for i, apt in enumerate(snapshot["airports"][:20], 1):
         <div class="lb-iata">{apt['iata']}</div>
         <div class="lb-name">{apt['name']}</div>
         <div class="lb-bar-bg"><div class="lb-bar" style="width:{max(pct, 2)}%;background:{bar_color};"></div></div>
-        <div class="lb-count">{apt['active']}</div>
+        <div class="lb-count">{apt.get('_airline_count', apt['active']) if selected_airline != 'All Airlines' else apt['active']}</div>
         <div class="lb-detail">{detail}</div>
     </div>"""
 
@@ -398,64 +607,6 @@ def _get_ai_summary(prompt):
         messages=[{"role": "user", "content": prompt}],
     )
     return msg.content[0].text
-
-
-if HAS_ANTHROPIC:
-    st.markdown("---")
-    st.markdown(f'<div class="section-header">AI Briefing</div>', unsafe_allow_html=True)
-
-    if "sky_summary" not in st.session_state:
-        st.session_state.sky_summary = ""
-    if "sky_summary_ts" not in st.session_state:
-        st.session_state.sky_summary_ts = ""
-
-    _snap_ts = snapshot.get("timestamp", "")
-    if st.session_state.sky_summary_ts != _snap_ts:
-        st.session_state.sky_summary = ""
-        st.session_state.sky_summary_ts = _snap_ts
-
-    _gen = st.button("Generate Briefing", key="sky_ai_btn", type="secondary")
-
-    if _gen:
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            try:
-                api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
-            except Exception:
-                api_key = ""
-        if not api_key:
-            st.warning("Add ANTHROPIC_API_KEY to .env (local) or Streamlit secrets (cloud).")
-        else:
-            with st.spinner("Analyzing airspace..."):
-                try:
-                    prompt = _build_sky_prompt(snapshot, local_ts)
-                    result = _get_ai_summary(prompt)
-                    if result:
-                        st.session_state.sky_summary = result
-                    else:
-                        st.warning("No summary returned. Check API key.")
-                except Exception as e:
-                    st.error(f"API error: {e}")
-
-    if st.session_state.sky_summary:
-        st.markdown(
-            f'<div style="background:linear-gradient(135deg, {NAVY_MID} 0%, {NAVY} 100%); '
-            f'padding:1rem 1.5rem; border-radius:8px; border-left:3px solid {RED}; '
-            f'margin:0.5rem 0 1rem 0;">'
-            f'<span style="color:{WHITE}; font-size:0.92rem; line-height:1.7; font-family:Inter,sans-serif;">'
-            f'{st.session_state.sky_summary}</span></div>',
-            unsafe_allow_html=True,
-        )
-
-# ---------------------------------------------------------------------------
-# Traffic Health Score (Whoop-style 0-100)
-# Uses the DS-agent-designed model from health_score.py
-# ---------------------------------------------------------------------------
-from health_score import (
-    score_snapshot, score_color_hex, compute_historical_baselines,
-    airport_health_score, system_health_score, SCORE_COLORS,
-    THRESHOLD_GREEN, THRESHOLD_YELLOW,
-)
 
 
 def _score_color(score):
@@ -630,151 +781,11 @@ def _make_gauge(score, title, subtitle=""):
     return fig
 
 
-# Load historical baselines + scores (single cached query)
-avg_3d, avg_7d, n_hist, hist_baselines, trend_data, airport_hist = _load_all_historical()
-
-# Score current snapshot using the DS model (with historical baselines if available)
-scored = score_snapshot(snapshot["airports"], hist_baselines)
-current_score = scored["system"]["score"]
-sys_info = scored["system"]
-
-st.markdown("---")
-st.markdown(f'<div class="section-header">Traffic Health Score</div>', unsafe_allow_html=True)
-
-g1, g2, g3 = st.columns(3)
-with g1:
-    _sub = f'{sys_info["healthy"]} healthy, {sys_info["moderate"]} moderate, {sys_info["congested"]} congested'
-    st.plotly_chart(_make_gauge(current_score, "NOW", _sub), use_container_width=True, config={"displayModeBar": False})
-with g2:
-    if avg_3d is not None:
-        st.plotly_chart(_make_gauge(avg_3d, "3-DAY AVG", f"{n_hist} snapshots"), use_container_width=True, config={"displayModeBar": False})
-    else:
-        st.markdown(f'<div style="text-align:center;padding:60px 0;color:{SILVER_DARK};font-size:0.85em;">3-day average<br>needs more snapshots</div>', unsafe_allow_html=True)
-with g3:
-    if avg_7d is not None:
-        st.plotly_chart(_make_gauge(avg_7d, "7-DAY AVG", f"{n_hist} snapshots"), use_container_width=True, config={"displayModeBar": False})
-    else:
-        st.markdown(f'<div style="text-align:center;padding:60px 0;color:{SILVER_DARK};font-size:0.85em;">7-day average<br>needs more snapshots</div>', unsafe_allow_html=True)
-
-# Per-airport health score table (sortable)
-display_apts = [(apt, sc) for apt, sc in scored["airports"] if apt.get("active", 0) > 0]
-
-if display_apts:
-    import pandas as pd
-    table_rows = []
-    for apt, sc in display_apts:
-        icao = apt.get("icao", "")
-        hist = airport_hist.get(icao, {})
-        table_rows.append({
-            "Airport": f'{apt["iata"]}',
-            "Name": apt.get("name", ""),
-            "Now": sc["score"],
-            "Status": sc["label"],
-            "3-Day": hist.get("avg_3d") if hist.get("avg_3d") is not None else None,
-            "7-Day": hist.get("avg_7d") if hist.get("avg_7d") is not None else None,
-            "Ground %": sc["components"]["ground_ratio"]["raw"],
-            "Flow Imbal": sc["components"]["flow_balance"]["raw"],
-            "Low Alt %": sc["components"]["low_alt_density"]["raw"],
-            "Active": apt.get("active", 0),
-        })
-    df_health = pd.DataFrame(table_rows)
-
-    # Color-code scores
-    def _color_score(val):
-        if pd.isna(val):
-            return ""
-        if val >= THRESHOLD_GREEN:
-            return f"background-color: rgba(34,197,94,0.2); color: {SCORE_COLORS['green']}"
-        elif val >= THRESHOLD_YELLOW:
-            return f"background-color: rgba(234,179,8,0.15); color: #eab308"
-        return f"background-color: rgba(239,68,68,0.15); color: {SCORE_COLORS['red']}"
-
-    styled = df_health.style.applymap(
-        _color_score, subset=["Now", "3-Day", "7-Day"]
-    ).format({
-        "Ground %": "{:.0%}",
-        "Flow Imbal": "{:.0%}",
-        "Low Alt %": "{:.0%}",
-        "3-Day": lambda x: f"{x:.0f}" if pd.notna(x) else "-",
-        "7-Day": lambda x: f"{x:.0f}" if pd.notna(x) else "-",
-    })
-
-    st.dataframe(
-        df_health,
-        use_container_width=True,
-        hide_index=True,
-        height=min(600, len(table_rows) * 35 + 40),
-        column_config={
-            "Airport": st.column_config.TextColumn("Airport", width="small"),
-            "Name": st.column_config.TextColumn("Name", width="medium"),
-            "Now": st.column_config.ProgressColumn("Now", min_value=0, max_value=100, format="%d"),
-            "Status": st.column_config.TextColumn("Status", width="small"),
-            "3-Day": st.column_config.ProgressColumn("3-Day Avg", min_value=0, max_value=100, format="%d"),
-            "7-Day": st.column_config.ProgressColumn("7-Day Avg", min_value=0, max_value=100, format="%d"),
-            "Ground %": st.column_config.NumberColumn("Ground %", format="%.0f%%"),
-            "Flow Imbal": st.column_config.NumberColumn("Flow Imbal", format="%.0f%%"),
-            "Low Alt %": st.column_config.NumberColumn("Low Alt %", format="%.0f%%"),
-            "Active": st.column_config.NumberColumn("Active", format="%d"),
-        },
-    )
-    st.caption("Click any column header to sort. Score = ground ratio (40%) + low-alt density (35%) + flow balance (25%).")
-
-# Health Score trend line (from cached historical data)
-if trend_data and len(trend_data) >= 3:
-    fig_trend = go.Figure()
-    times = [t["time"] for t in trend_data]
-    scores = [t["score"] for t in trend_data]
-
-    # Color the line segments by score band
-    fig_trend.add_trace(go.Scatter(
-        x=times, y=scores,
-        mode="lines+markers",
-        line=dict(color=SILVER, width=2),
-        marker=dict(
-            size=8,
-            color=scores,
-            colorscale=[
-                [0, SCORE_COLORS["red"]], [0.4, "#eab308"],
-                [0.7, SCORE_COLORS["green"]], [1, SCORE_COLORS["green"]]
-            ],
-            cmin=0, cmax=100,
-            line=dict(width=1, color="rgba(255,255,255,0.3)"),
-        ),
-        hovertemplate="<b>%{x|%b %d %I:%M %p}</b><br>Score: %{y}<extra></extra>",
-        showlegend=False,
-    ))
-
-    # Add threshold bands
-    fig_trend.add_hrect(y0=THRESHOLD_GREEN, y1=100, fillcolor="rgba(34,197,94,0.05)", line_width=0)
-    fig_trend.add_hrect(y0=THRESHOLD_YELLOW, y1=THRESHOLD_GREEN, fillcolor="rgba(234,179,8,0.04)", line_width=0)
-    fig_trend.add_hrect(y0=0, y1=THRESHOLD_YELLOW, fillcolor="rgba(239,68,68,0.04)", line_width=0)
-
-    # Threshold lines
-    fig_trend.add_hline(y=THRESHOLD_GREEN, line=dict(color="rgba(34,197,94,0.3)", width=1, dash="dot"),
-                        annotation_text="Healthy", annotation_position="right",
-                        annotation_font=dict(size=9, color="rgba(34,197,94,0.5)"))
-    fig_trend.add_hline(y=THRESHOLD_YELLOW, line=dict(color="rgba(234,179,8,0.3)", width=1, dash="dot"),
-                        annotation_text="Moderate", annotation_position="right",
-                        annotation_font=dict(size=9, color="rgba(234,179,8,0.5)"))
-
-    fig_trend.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        height=280,
-        font=dict(family="JetBrains Mono, monospace", color="white"),
-        margin=dict(l=40, r=60, t=10, b=30),
-        xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-        yaxis=dict(title="Score", range=[0, 105], gridcolor="rgba(255,255,255,0.05)"),
-    )
-    st.markdown(f'<div style="margin-top:8px;"><span class="section-header" style="font-size:0.85em;">Health Score Over Time</span></div>', unsafe_allow_html=True)
-    st.plotly_chart(fig_trend, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
-
 # Map + Ground Congestion side by side
 st.markdown("---")
 map_col, ground_col = st.columns([3, 2])
 
-apt_data = [a for a in snapshot["airports"] if a["active"] > 0]
+apt_data = [a for a in filtered_airports if a["active"] > 0]
 
 with map_col:
     st.markdown(f'<div class="section-header">Live Airspace Map</div>', unsafe_allow_html=True)
@@ -976,9 +987,11 @@ with col_right:
 st.markdown("---")
 st.markdown(f'<div class="section-header">Active Aircraft by Airport</div>', unsafe_allow_html=True)
 
-top_airports = [a for a in snapshot["airports"] if a["active"] > 0][:15]
+top_airports = sorted(
+    [a for a in snapshot["airports"] if a["active"] > 0],
+    key=lambda a: a["on_ground"] + a["low_altitude"] + a["descending"] + a["climbing"],
+)[-15:]
 if top_airports:
-    top_airports.reverse()
     fig2 = go.Figure()
     fig2.add_trace(go.Bar(
         y=[a["iata"] for a in top_airports],
@@ -1211,7 +1224,7 @@ with st.expander("Data Dictionary"):
 <tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Low Alt Cutoff</td>
     <td style="padding:4px 0;">10,000 ft (3,048 m) barometric altitude. Standard transition altitude for approach/departure procedures.</td></tr>
 <tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Refresh</td>
-    <td style="padding:4px 0;">Snapshots taken every 2 hours (6 AM - 10 PM ET) and cached in MotherDuck. App cache TTL: 2 minutes.</td></tr>
+    <td style="padding:4px 0;">Snapshots taken every hour (6 AM - 11 PM ET) and cached in MotherDuck. App cache TTL: 2 minutes.</td></tr>
 </table>
 
 <div style="color:{WHITE}; font-weight:700; font-size:1em; margin:16px 0 8px 0; border-bottom:1px solid {SILVER_DARK}; padding-bottom:6px;">Leaderboard Key</div>
