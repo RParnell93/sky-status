@@ -741,68 +741,72 @@ apt_data = [a for a in snapshot["airports"] if a["active"] > 0]
 with map_col:
     st.markdown(f'<div class="section-header">Live Airspace Map</div>', unsafe_allow_html=True)
     if apt_data:
+        import math
         fig = go.Figure()
 
-        # Aircraft dots
+        # Aircraft with heading arrows (FR24-style)
         aircraft_lats = []
         aircraft_lons = []
+        aircraft_headings = []
         aircraft_texts = []
         for apt in snapshot["airports"]:
             for ac in apt.get("aircraft", []):
                 if not ac["on_ground"]:
                     aircraft_lats.append(ac["lat"])
                     aircraft_lons.append(ac["lon"])
+                    aircraft_headings.append(ac.get("heading") or 0)
                     aircraft_texts.append(ac["callsign"] or ac["icao24"])
 
         if aircraft_lats:
-            fig.add_trace(go.Scattergeo(
+            fig.add_trace(go.Scattermapbox(
                 lat=aircraft_lats, lon=aircraft_lons,
                 mode="markers",
-                marker=dict(size=3, color=SILVER, opacity=0.3),
+                marker=dict(
+                    size=7,
+                    symbol="airport",
+                    angle=aircraft_headings,
+                    color="#F0B429",
+                    opacity=0.7,
+                ),
                 text=aircraft_texts,
                 hoverinfo="text",
                 showlegend=False,
             ))
 
-        import math
+        # Airport markers
         max_act = max(a["active"] for a in apt_data) or 1
         ground_pcts = [round(a["on_ground"] / a["active"] * 100) if a["active"] else 0 for a in apt_data]
-        fig.add_trace(go.Scattergeo(
+        fig.add_trace(go.Scattermapbox(
             lat=[a["lat"] for a in apt_data],
             lon=[a["lon"] for a in apt_data],
             mode="markers+text",
             marker=dict(
-                size=[8 + 20 * math.log1p(a["active"]) / math.log1p(max_act) for a in apt_data],
+                size=[10 + 18 * math.log1p(a["active"]) / math.log1p(max_act) for a in apt_data],
                 color=ground_pcts,
-                colorscale=[[0, "#2E8B57"], [0.4, SILVER], [0.7, RED_LIGHT], [1, RED]],
+                colorscale=[[0, "#1565C0"], [0.4, "#42A5F5"], [0.7, "#FFB74D"], [1, "#E53935"]],
                 cmin=0, cmax=100,
-                opacity=0.75,
-                line=dict(width=1, color="rgba(255,255,255,0.5)"),
+                opacity=0.85,
                 colorbar=dict(
                     title=dict(text="Ground %", font=dict(color=SILVER, size=9)),
                     tickfont=dict(color=SILVER, size=8),
-                    ticksuffix="%", len=0.5, thickness=10,
+                    ticksuffix="%", len=0.4, thickness=8,
+                    x=1.02,
                 ),
             ),
-            text=[f'{a["iata"]} {a["active"]}' for a in apt_data],
+            text=[a["iata"] for a in apt_data],
             textposition="top center",
-            textfont=dict(size=8, color="white", family="JetBrains Mono"),
-            hovertext=[f"<b>{a['iata']}</b> {a['name']}<br>Active: {a['active']} (size)<br>Ground: {a['on_ground']}/{a['active']} = {g}% (color)" for a, g in zip(apt_data, ground_pcts)],
+            textfont=dict(size=9, color="white", family="JetBrains Mono"),
+            hovertext=[f"<b>{a['iata']}</b> {a['name']}<br>Active: {a['active']}<br>Ground: {a['on_ground']}/{a['active']} = {g}%" for a, g in zip(apt_data, ground_pcts)],
             hoverinfo="text",
             showlegend=False,
         ))
 
-        fig.update_geos(
-            scope="usa",
-            bgcolor="rgba(0,0,0,0)",
-            landcolor=NAVY_MID,
-            lakecolor=NAVY,
-            showlakes=True,
-            coastlinecolor=SILVER_DARK,
-            countrycolor=SILVER_DARK,
-            subunitcolor="rgba(92,111,130,0.27)",
-        )
         fig.update_layout(
+            mapbox=dict(
+                style="carto-darkmatter",
+                center=dict(lat=38.5, lon=-96),
+                zoom=3,
+            ),
             template="plotly_dark",
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
@@ -810,7 +814,7 @@ with map_col:
             margin=dict(t=10, b=10, l=10, r=10),
             font=dict(family="Inter, sans-serif"),
         )
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 with ground_col:
     st.markdown(f'<div class="section-header">Ground Congestion</div>', unsafe_allow_html=True)
