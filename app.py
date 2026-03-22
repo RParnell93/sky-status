@@ -598,4 +598,57 @@ with st.expander("Full Airport Data"):
         st.dataframe(table, use_container_width=True, hide_index=True)
 
 st.markdown("---")
+with st.expander("Data Dictionary"):
+    st.html(f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap');
+</style>
+<div style="font-family:'Inter',sans-serif; color:{SILVER}; font-size:0.85em; line-height:1.7;">
+
+<div style="color:{WHITE}; font-weight:700; font-size:1em; margin-bottom:8px; border-bottom:1px solid {SILVER_DARK}; padding-bottom:6px;">Metrics</div>
+<table style="width:100%; border-collapse:collapse;">
+<tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Active</td>
+    <td style="padding:4px 0;">Aircraft on the ground + airborne below 10,000 ft within 20 km of the airport. Primary congestion score.</td></tr>
+<tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">On Ground</td>
+    <td style="padding:4px 0;">Aircraft reporting ground contact (at gates, taxiways, or runways).</td></tr>
+<tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Low Altitude</td>
+    <td style="padding:4px 0;">Airborne aircraft below 10,000 ft (3,048 m). Includes arriving, departing, and holding traffic.</td></tr>
+<tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Arriving</td>
+    <td style="padding:4px 0;">Airborne aircraft with vertical rate below -1 m/s (descending). Likely on approach.</td></tr>
+<tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Departing</td>
+    <td style="padding:4px 0;">Airborne aircraft with vertical rate above +1 m/s (climbing). Likely just took off.</td></tr>
+<tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">In Pattern</td>
+    <td style="padding:4px 0;">Airborne aircraft in level flight (vertical rate between -1 and +1 m/s). Could be holding, taxiing to runway, or transiting through.</td></tr>
+<tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Total Nearby</td>
+    <td style="padding:4px 0;">All aircraft within 20 km regardless of altitude. Includes high-altitude overflights.</td></tr>
+<tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Ground %</td>
+    <td style="padding:4px 0;">On Ground / Active. Higher values suggest surface congestion (taxi delays, gate holds).</td></tr>
+</table>
+
+<div style="color:{WHITE}; font-weight:700; font-size:1em; margin:16px 0 8px 0; border-bottom:1px solid {SILVER_DARK}; padding-bottom:6px;">Methodology</div>
+<table style="width:100%; border-collapse:collapse;">
+<tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Source</td>
+    <td style="padding:4px 0;"><a href="https://opensky-network.org" style="color:{RED_LIGHT};">OpenSky Network</a> - free, crowdsourced ADS-B receiver network. No API key required.</td></tr>
+<tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Coverage</td>
+    <td style="padding:4px 0;">Top 30 US airports by passenger volume. Bounding box: lat 24-50, lon -125 to -66.</td></tr>
+<tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Radius</td>
+    <td style="padding:4px 0;">20 km (~10.8 nautical miles) from airport coordinates, calculated via haversine formula.</td></tr>
+<tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Low Alt Cutoff</td>
+    <td style="padding:4px 0;">10,000 ft (3,048 m) barometric altitude. Standard transition altitude for approach/departure procedures.</td></tr>
+<tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Refresh</td>
+    <td style="padding:4px 0;">Snapshots taken every 2 hours (6 AM - 10 PM ET) and cached in MotherDuck. App cache TTL: 2 minutes.</td></tr>
+</table>
+
+<div style="color:{WHITE}; font-weight:700; font-size:1em; margin:16px 0 8px 0; border-bottom:1px solid {SILVER_DARK}; padding-bottom:6px;">Leaderboard Key</div>
+<table style="width:100%; border-collapse:collapse;">
+<tr><td style="padding:4px 12px 4px 0; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap; color:{SILVER_DARK};">g</td><td style="padding:4px 0;">Ground</td>
+    <td style="padding:4px 12px 4px 16px; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap; color:{SILVER_DARK};">l</td><td style="padding:4px 0;">Low altitude</td></tr>
+<tr><td style="padding:4px 12px 4px 0; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap; color:{SILVER_DARK};">d</td><td style="padding:4px 0;">Descending (arriving)</td>
+    <td style="padding:4px 12px 4px 16px; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap; color:{SILVER_DARK};">c</td><td style="padding:4px 0;">Climbing (departing)</td></tr>
+</table>
+
+</div>
+""")
+
 st.caption("Data: OpenSky Network (free, no API key). Aircraft within 20km and below 10,000ft counted as active. Refreshes every 2 minutes.")
