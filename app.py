@@ -480,7 +480,7 @@ with g3:
 # Per-airport health score table (sortable)
 display_apts = sorted(
     [(apt, sc) for apt, sc in scored["airports"] if apt.get("active", 0) > 0],
-    key=lambda x: x[1]["score"],
+    key=lambda x: x[1]["score"], reverse=True,
 )
 
 def _bar_color(score):
@@ -531,8 +531,8 @@ if display_apts:
         health_rows += f'''<tr>
             <td style="{_td_style}font-weight:700;">{apt["iata"]}</td>
             <td style="{_td_style}color:{SILVER};font-family:Inter,sans-serif;">{apt.get("name","")}</td>
-            <td style="{_td_style}min-width:120px;">{_score_bar_html(now_score)}</td>
             <td style="{_td_style}color:{status_color};font-weight:600;font-size:0.75em;">{sc["label"]}</td>
+            <td style="{_td_style}min-width:120px;">{_score_bar_html(now_score)}</td>
             <td style="{_td_style}min-width:120px;">{_score_bar_html(avg3)}</td>
             <td style="{_td_style}min-width:120px;">{_score_bar_html(avg7)}</td>
             <td style="{_td_style}text-align:right;">{sc["components"]["ground_ratio"]["raw"]:.0%}</td>
@@ -547,7 +547,7 @@ if display_apts:
     <table style="width:100%;border-collapse:collapse;">
         <thead><tr>
             <th style="{_th_style}">Airport</th><th style="{_th_style}">Name</th>
-            <th style="{_th_style}min-width:120px;">Now</th><th style="{_th_style}">Status</th>
+            <th style="{_th_style}">Status</th><th style="{_th_style}min-width:120px;">Now</th>
             <th style="{_th_style}min-width:120px;">3-Day Avg</th><th style="{_th_style}min-width:120px;">7-Day Avg</th>
             <th style="{_th_style}text-align:right;">Ground %</th><th style="{_th_style}text-align:right;">Flow Imbal</th>
             <th style="{_th_style}text-align:right;">Low Alt %</th><th style="{_th_style}text-align:right;">Active</th>
