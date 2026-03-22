@@ -219,7 +219,12 @@ active_airports = sum(1 for a in snapshot["airports"] if a["active"] > 0)
 total_active = sum(a["active"] for a in snapshot["airports"])
 busiest = snapshot["airports"][0] if snapshot["airports"] else None
 
-c1, c2, c3, c4 = st.columns(4)
+total_ground = sum(a["on_ground"] for a in snapshot["airports"])
+total_descending = sum(a["descending"] for a in snapshot["airports"])
+total_climbing = sum(a["climbing"] for a in snapshot["airports"])
+ground_pct = round(total_ground / total_active * 100) if total_active else 0
+
+c1, c2, c3, c4, c5, c6 = st.columns(6)
 with c1:
     st.markdown(f'<div class="metric-card"><div class="metric-value">{snapshot["total_us_aircraft"]:,}</div><div class="metric-label">Aircraft Over US</div></div>', unsafe_allow_html=True)
 with c2:
@@ -229,6 +234,10 @@ with c3:
 with c4:
     if busiest:
         st.markdown(f'<div class="metric-card"><div class="metric-value">{busiest["iata"]}</div><div class="metric-label">Busiest Right Now</div></div>', unsafe_allow_html=True)
+with c5:
+    st.markdown(f'<div class="metric-card"><div class="metric-value">{ground_pct}%</div><div class="metric-label">On Ground</div></div>', unsafe_allow_html=True)
+with c6:
+    st.markdown(f'<div class="metric-card"><div class="metric-value">{total_descending}</div><div class="metric-label">Inbound Now</div></div>', unsafe_allow_html=True)
 
 _src = snapshot.get("source", "OpenSky")
 st.caption(f"Updated: {local_ts}  |  Source: {_src}  |  Refreshes every 2 min")
@@ -338,6 +347,114 @@ if apt_data:
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
+# Ground vs Air donut + Arrival/Departure flow side by side
+st.markdown("---")
+col_left, col_right = st.columns(2)
+
+with col_left:
+    st.markdown(f'<div class="section-header">Ground vs Airborne</div>', unsafe_allow_html=True)
+    total_low_alt = sum(a["low_altitude"] for a in snapshot["airports"])
+    fig_donut = go.Figure(go.Pie(
+        labels=["On Ground", "Low Altitude", "Descending", "Climbing"],
+        values=[total_ground, total_low_alt, total_descending, total_climbing],
+        hole=0.55,
+        marker=dict(colors=[NAVY_LIGHT, SILVER, RED, "#2E8B57"]),
+        textinfo="label+value",
+        textfont=dict(size=11, family="JetBrains Mono"),
+        hoverinfo="label+value+percent",
+    ))
+    fig_donut.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=350,
+        margin=dict(t=10, b=10, l=10, r=10),
+        font=dict(family="Inter, sans-serif", color="white"),
+        showlegend=False,
+        annotations=[dict(
+            text=f"<b>{total_active}</b><br><span style='font-size:10px'>active</span>",
+            x=0.5, y=0.5, font_size=24, showarrow=False,
+            font=dict(color="white", family="JetBrains Mono"),
+        )],
+    )
+    st.plotly_chart(fig_donut, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+
+with col_right:
+    st.markdown(f'<div class="section-header">Arrival vs Departure Flow</div>', unsafe_allow_html=True)
+    flow_airports = [a for a in snapshot["airports"] if a["descending"] + a["climbing"] > 0][:12]
+    if flow_airports:
+        flow_airports.reverse()
+        fig_flow = go.Figure()
+        fig_flow.add_trace(go.Bar(
+            y=[a["iata"] for a in flow_airports],
+            x=[-a["descending"] for a in flow_airports],
+            name="Arriving",
+            orientation="h",
+            marker_color=RED,
+            text=[a["descending"] for a in flow_airports],
+            textposition="inside",
+            hoverinfo="none",
+        ))
+        fig_flow.add_trace(go.Bar(
+            y=[a["iata"] for a in flow_airports],
+            x=[a["climbing"] for a in flow_airports],
+            name="Departing",
+            orientation="h",
+            marker_color="#2E8B57",
+            text=[a["climbing"] for a in flow_airports],
+            textposition="inside",
+            hoverinfo="none",
+        ))
+        fig_flow.update_layout(
+            barmode="relative",
+            template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            height=350,
+            font=dict(family="JetBrains Mono, monospace", color="white", size=11),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5, font=dict(size=10)),
+            margin=dict(l=40, r=20, t=40, b=20),
+            xaxis=dict(zeroline=True, zerolinecolor=SILVER_DARK, zerolinewidth=1, title="Aircraft Count"),
+        )
+        st.plotly_chart(fig_flow, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+
+# Ground congestion scatter
+st.markdown("---")
+st.markdown(f'<div class="section-header">Airport Efficiency</div>', unsafe_allow_html=True)
+scatter_apts = [a for a in snapshot["airports"] if a["active"] >= 5]
+if scatter_apts:
+    ground_ratios = [round(a["on_ground"] / a["active"] * 100) if a["active"] else 0 for a in scatter_apts]
+    fig_scatter = go.Figure(go.Scatter(
+        x=[a["active"] for a in scatter_apts],
+        y=ground_ratios,
+        mode="markers+text",
+        text=[a["iata"] for a in scatter_apts],
+        textposition="top center",
+        textfont=dict(size=9, color="white", family="JetBrains Mono"),
+        marker=dict(
+            size=[max(a["active"] * 1.5, 10) for a in scatter_apts],
+            color=ground_ratios,
+            colorscale=[[0, "#2E8B57"], [0.5, SILVER], [1, RED]],
+            opacity=0.85,
+            line=dict(width=1, color="white"),
+            colorbar=dict(title=dict(text="Ground %", font=dict(color=SILVER, size=10)), tickfont=dict(color=SILVER, size=9)),
+        ),
+        hovertext=[f"<b>{a['iata']}</b> {a['name']}<br>Active: {a['active']}<br>Ground: {a['on_ground']} ({round(a['on_ground']/a['active']*100)}%)" for a in scatter_apts],
+        hoverinfo="text",
+    ))
+    fig_scatter.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=400,
+        font=dict(family="Inter, sans-serif", color="white"),
+        margin=dict(l=50, r=20, t=20, b=50),
+        xaxis=dict(title="Total Active Aircraft", gridcolor="rgba(255,255,255,0.05)"),
+        yaxis=dict(title="% On Ground (higher = more congested)", gridcolor="rgba(255,255,255,0.05)"),
+    )
+    st.plotly_chart(fig_scatter, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+    st.caption("Airports in the upper-right are both busy AND have a high proportion of planes stuck on the ground - potential delay hotspots.")
+
 # Stacked bar
 st.markdown("---")
 st.markdown(f'<div class="section-header">Active Aircraft by Airport</div>', unsafe_allow_html=True)
@@ -390,6 +507,68 @@ if top_airports:
         xaxis_title="Aircraft Count",
     )
     st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+
+# Congestion heatmap (needs historical data from MotherDuck)
+def _load_heatmap_data():
+    token = os.environ.get("MOTHERDUCK_TOKEN", "")
+    if not token:
+        try:
+            token = st.secrets["MOTHERDUCK_TOKEN"]
+        except (KeyError, FileNotFoundError):
+            return None
+    if not token:
+        return None
+    try:
+        import duckdb
+        con = duckdb.connect(f"md:data_viz?motherduck_token={token}")
+        n_snapshots = con.execute("SELECT COUNT(DISTINCT snapshot_time) FROM airport_congestion").fetchone()[0]
+        if n_snapshots < 4:
+            con.close()
+            return None
+        rows = con.execute("""
+            SELECT iata, EXTRACT(HOUR FROM snapshot_time) as hour, AVG(active) as avg_active
+            FROM airport_congestion
+            WHERE iata IN (
+                SELECT iata FROM airport_congestion
+                GROUP BY iata ORDER BY AVG(active) DESC LIMIT 15
+            )
+            GROUP BY iata, hour
+            ORDER BY iata, hour
+        """).fetchall()
+        con.close()
+        return rows
+    except Exception:
+        return None
+
+heatmap_data = _load_heatmap_data()
+if heatmap_data:
+    st.markdown("---")
+    st.markdown(f'<div class="section-header">Congestion by Time of Day</div>', unsafe_allow_html=True)
+
+    iatas = sorted(set(r[0] for r in heatmap_data))
+    hours = sorted(set(int(r[1]) for r in heatmap_data))
+    lookup = {(r[0], int(r[1])): r[2] for r in heatmap_data}
+    z = [[lookup.get((iata, h), 0) for h in hours] for iata in iatas]
+
+    fig_heat = go.Figure(go.Heatmap(
+        z=z,
+        x=[f"{h}:00" for h in hours],
+        y=iatas,
+        colorscale=[[0, NAVY_MID], [0.3, NAVY_LIGHT], [0.6, SILVER], [0.8, RED_LIGHT], [1, RED]],
+        hovertemplate="<b>%{y}</b> at %{x} UTC<br>Avg active: %{z:.1f}<extra></extra>",
+        colorbar=dict(title=dict(text="Avg Active", font=dict(color=SILVER, size=10)), tickfont=dict(color=SILVER, size=9)),
+    ))
+    fig_heat.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=max(300, len(iatas) * 28 + 80),
+        font=dict(family="JetBrains Mono, monospace", color="white"),
+        margin=dict(l=50, r=20, t=20, b=40),
+        xaxis=dict(title="Hour (UTC)", dtick=1),
+    )
+    st.plotly_chart(fig_heat, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+    st.caption("Heatmap builds over time as more snapshots are collected every 2 hours.")
 
 # Data table
 st.markdown("---")
