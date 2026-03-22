@@ -21,7 +21,7 @@ NAVY_LIGHT = "#0A4A7A"
 RED = "#C8102E"
 RED_LIGHT = "#E8354A"
 SILVER = "#8B9DAF"
-SILVER_DARK = "#5C6F82"
+SILVER_DARK = "#94A5B7"
 WHITE = "#FFFFFF"
 GRAY_BG = "#F0F2F5"
 
@@ -338,9 +338,7 @@ def _build_sky_prompt(snapshot, ts_str):
 
     pattern_block = "\n".join(f"  - {p}" for p in patterns) if patterns else "  None detected"
 
-    return f"""You are a concise aviation analyst writing a 3-4 sentence snapshot of current US airspace conditions. Write for an informed general audience, like a flight tracker blog or aviation Twitter account.
-
-CURRENT DATA ({ts_str}):
+    return f"""CURRENT DATA ({ts_str}):
   Total aircraft over US: {total_ac:,}
   Total active near airports: {total_active}
   Overall ground rate: {ground_pct}% ({total_ground} ground / {total_active} active)
@@ -353,17 +351,31 @@ TOP 10 AIRPORTS:
 NOTABLE PATTERNS:
 {pattern_block}
 
-REQUIREMENTS:
+EXAMPLE OUTPUTS (match this tone and structure):
+
+Example 1 (high ground congestion):
+"ORD leads ground congestion at 71%, with 89 of 125 active aircraft sitting on tarmac, pointing to taxi delays and likely gate holds. ATL and DFW are both running arrival-heavy at 2:1 ratios, pulling in 40+ descending aircraft each while departures lag behind. The system has 4,800 aircraft over US airspace with a 48% overall ground rate, well above the typical mid-afternoon 35%."
+
+Example 2 (balanced, quiet system):
+"US airspace is carrying 3,200 aircraft this Sunday evening, about 20% below weekday averages. ATL tops the board at 95 active but only 33% on the ground, a clean flow with 22 arrivals matching 24 departures. No airport in the top 10 exceeds 40% ground rate, so taxi queues are short across the board."
+
+Example 3 (departure surge):
+"DEN is pushing departures hard with 45 climbing vs. 18 descending, likely a post-bank push from United's hub operation. LAX and SFO show the opposite pattern, each pulling in 30+ arrivals with fewer than 15 departures, consistent with West Coast evening arrival waves. Ground rates are moderate at 38% system-wide across 5,100 tracked aircraft."
+
+Write a 3-4 sentence briefing about the CURRENT DATA above. Match the examples' tone and data density."""
+
+
+_AI_SYSTEM_PROMPT = """You are a concise aviation analyst writing snapshot briefings of US airspace.
+Your audience is informed general readers, like a flight tracker blog or aviation Twitter account.
+Rules:
 - Exactly 3-4 sentences. No more.
 - Lead with the most interesting finding, not a generic overview.
 - Use specific numbers (airport codes, counts, percentages).
 - Compare airports to each other when relevant.
-- If ground rates are high, say what that implies for travelers (delays, taxi queues).
+- If ground rates are high, note traveler impact (delays, taxi queues).
 - If arrival/departure imbalance exists, note it.
-- Write in present tense. No hedging ("may", "could potentially"). State what the data shows.
-- No em dashes. Use commas or periods instead.
-- No inflated language (robust, comprehensive, significant, notably). Just state the facts.
-- No filler phrases ("it is worth noting", "interestingly"). Get to the point.
+- Present tense. No hedging. State what the data shows.
+- No em dashes. No inflated language. No filler phrases.
 - Sound like a sharp analyst, not a press release."""
 
 
@@ -381,6 +393,8 @@ def _get_ai_summary(prompt):
     msg = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=250,
+        temperature=0.3,
+        system=_AI_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
     )
     return msg.content[0].text
@@ -460,32 +474,34 @@ def _score_label(score):
     return "Congested"
 
 
-def _load_historical_health():
-    """Load historical baselines + compute 3d/7d avg scores from MotherDuck."""
+def _get_md_token():
+    """Get MotherDuck token from env or Streamlit secrets."""
     token = os.environ.get("MOTHERDUCK_TOKEN", "")
     if not token:
         try:
             token = st.secrets["MOTHERDUCK_TOKEN"]
         except (KeyError, FileNotFoundError):
-            return None, None, None, {}
+            pass
+    return token
+
+
+@st.cache_data(ttl=300)
+def _load_all_historical():
+    """Single cached query for baselines, avg scores, and trend data.
+
+    Returns (avg_3d, avg_7d, n_snapshots, baselines, trend_data).
+    Merges what used to be 3 separate MotherDuck connections into 1.
+    """
+    token = _get_md_token()
     if not token:
-        return None, None, None, {}
+        return None, None, None, {}, None
     try:
         import duckdb
         from datetime import timedelta
+        from collections import defaultdict
         con = duckdb.connect(f"md:data_viz?motherduck_token={token}")
 
-        # Per-airport baselines for last 7 days
-        baseline_rows = con.execute("""
-            SELECT icao, AVG(on_ground), AVG(active), AVG(low_altitude),
-                   AVG(descending), AVG(climbing)
-            FROM airport_congestion
-            WHERE snapshot_time >= NOW() - INTERVAL 7 DAY
-            GROUP BY icao
-        """).fetchall()
-        baselines = compute_historical_baselines(baseline_rows)
-
-        # Per-snapshot airport data for scoring historical snapshots
+        # Single query: all 7-day airport data (used for baselines, scoring, and trend)
         snap_rows = con.execute("""
             SELECT snapshot_time, icao, active, on_ground, airborne,
                    low_altitude, descending, climbing, total_nearby
@@ -493,13 +509,33 @@ def _load_historical_health():
             WHERE snapshot_time >= NOW() - INTERVAL 7 DAY
             ORDER BY snapshot_time
         """).fetchall()
+
+        # Baselines from aggregates (computed in Python to avoid a second query)
+        # Accumulate sums per icao for baseline calculation
+        icao_sums = defaultdict(lambda: [0, 0, 0, 0, 0, 0])  # ground, active, low_alt, desc, climb, count
+        for r in snap_rows:
+            icao = r[1]
+            s = icao_sums[icao]
+            s[0] += r[3] or 0   # on_ground
+            s[1] += r[2] or 0   # active
+            s[2] += r[5] or 0   # low_altitude
+            s[3] += r[6] or 0   # descending
+            s[4] += r[7] or 0   # climbing
+            s[5] += 1
+
+        baseline_rows = []
+        for icao, s in icao_sums.items():
+            n = s[5]
+            if n > 0:
+                baseline_rows.append((icao, s[0]/n, s[1]/n, s[2]/n, s[3]/n, s[4]/n))
+        baselines = compute_historical_baselines(baseline_rows)
+
         con.close()
 
         if not snap_rows:
-            return None, None, None, baselines
+            return None, None, None, baselines, None
 
         # Group by snapshot_time
-        from collections import defaultdict
         snapshots = defaultdict(list)
         for r in snap_rows:
             snapshots[r[0]].append({
@@ -511,11 +547,12 @@ def _load_historical_health():
         now = datetime.now(timezone.utc)
         scores_3d = []
         scores_7d = []
+        trend = []
 
-        for snap_time, airports in snapshots.items():
-            # Score each airport in this snapshot
-            scored = score_snapshot(airports, baselines)
-            sys_score = scored["system"]["score"]
+        for snap_time in sorted(snapshots.keys()):
+            airports = snapshots[snap_time]
+            scored_snap = score_snapshot(airports, baselines)
+            sys_score = scored_snap["system"]["score"]
 
             ts = snap_time if hasattr(snap_time, 'date') else datetime.fromisoformat(str(snap_time))
             if hasattr(ts, 'tzinfo') and ts.tzinfo is None:
@@ -525,13 +562,17 @@ def _load_historical_health():
             if age <= timedelta(days=3):
                 scores_3d.append(sys_score)
 
+            trend.append({"time": snap_time, "score": sys_score,
+                          "healthy": scored_snap["system"]["healthy"],
+                          "congested": scored_snap["system"]["congested"]})
+
         avg_3d = round(sum(scores_3d) / len(scores_3d), 1) if scores_3d else None
         avg_7d = round(sum(scores_7d) / len(scores_7d), 1) if scores_7d else None
         n_snapshots = len(scores_7d)
 
-        return avg_3d, avg_7d, n_snapshots, baselines
+        return avg_3d, avg_7d, n_snapshots, baselines, trend
     except Exception:
-        return None, None, None, {}
+        return None, None, None, {}, None
 
 
 def _make_gauge(score, title, subtitle=""):
@@ -572,8 +613,8 @@ def _make_gauge(score, title, subtitle=""):
     return fig
 
 
-# Load historical baselines + scores
-avg_3d, avg_7d, n_hist, hist_baselines = _load_historical_health()
+# Load historical baselines + scores (single cached query)
+avg_3d, avg_7d, n_hist, hist_baselines, trend_data = _load_all_historical()
 
 # Score current snapshot using the DS model (with historical baselines if available)
 scored = score_snapshot(snapshot["airports"], hist_baselines)
@@ -640,52 +681,7 @@ if display_apts:
     st.plotly_chart(fig_health, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
     st.caption("Score uses ground ratio (40%), low-altitude density (35%), and flow balance (25%). Worst-component drag penalty prevents one good metric from hiding a crisis.")
 
-# Health Score trend line (historical)
-def _load_health_trend():
-    """Load per-snapshot system health scores for trend chart."""
-    token = os.environ.get("MOTHERDUCK_TOKEN", "")
-    if not token:
-        try:
-            token = st.secrets["MOTHERDUCK_TOKEN"]
-        except (KeyError, FileNotFoundError):
-            return None
-    if not token:
-        return None
-    try:
-        import duckdb
-        con = duckdb.connect(f"md:data_viz?motherduck_token={token}")
-        rows = con.execute("""
-            SELECT snapshot_time, icao, active, on_ground, airborne,
-                   low_altitude, descending, climbing, total_nearby
-            FROM airport_congestion
-            WHERE snapshot_time >= NOW() - INTERVAL 7 DAY
-            ORDER BY snapshot_time
-        """).fetchall()
-        con.close()
-        if len(rows) < 2:
-            return None
-
-        from collections import defaultdict
-        snapshots = defaultdict(list)
-        for r in rows:
-            snapshots[r[0]].append({
-                "icao": r[1], "active": r[2], "on_ground": r[3],
-                "airborne": r[4], "low_altitude": r[5],
-                "descending": r[6], "climbing": r[7], "total_nearby": r[8],
-            })
-
-        trend = []
-        for snap_time in sorted(snapshots.keys()):
-            airports = snapshots[snap_time]
-            scored = score_snapshot(airports, hist_baselines)
-            trend.append({"time": snap_time, "score": scored["system"]["score"],
-                          "healthy": scored["system"]["healthy"],
-                          "congested": scored["system"]["congested"]})
-        return trend
-    except Exception:
-        return None
-
-trend_data = _load_health_trend()
+# Health Score trend line (from cached historical data)
 if trend_data and len(trend_data) >= 3:
     fig_trend = go.Figure()
     times = [t["time"] for t in trend_data]
@@ -1040,13 +1036,9 @@ if all_airlines:
     st.plotly_chart(fig_airline, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
 # Congestion heatmap (needs historical data from MotherDuck)
+@st.cache_data(ttl=300)
 def _load_heatmap_data():
-    token = os.environ.get("MOTHERDUCK_TOKEN", "")
-    if not token:
-        try:
-            token = st.secrets["MOTHERDUCK_TOKEN"]
-        except (KeyError, FileNotFoundError):
-            return None
+    token = _get_md_token()
     if not token:
         return None
     try:
@@ -1099,7 +1091,7 @@ if heatmap_data:
         xaxis=dict(title="Hour (UTC)", dtick=1),
     )
     st.plotly_chart(fig_heat, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
-    st.caption("Heatmap builds over time as more snapshots are collected every 2 hours.")
+    st.caption("Heatmap builds over time as more snapshots are collected every hour.")
 
 # Data table
 st.markdown("---")

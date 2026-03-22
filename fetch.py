@@ -44,10 +44,17 @@ def haversine_km(lat1, lon1, lat2, lon2):
 
 def fetch_us_aircraft():
     """Fetch all aircraft over the US from OpenSky Network."""
-    r = requests.get("https://opensky-network.org/api/states/all", params={
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+
+    session = requests.Session()
+    retries = Retry(total=3, backoff_factor=10, status_forcelist=[429, 500, 502, 503])
+    session.mount("https://", HTTPAdapter(max_retries=retries))
+
+    r = session.get("https://opensky-network.org/api/states/all", params={
         "lamin": 24, "lamax": 50,
         "lomin": -125, "lomax": -66,
-    }, timeout=30)
+    }, timeout=(10, 30))
     r.raise_for_status()
     data = r.json()
     states = data.get("states", [])

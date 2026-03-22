@@ -82,6 +82,7 @@ def take_snapshot():
 
     con = get_connection()
     inserted = 0
+    errors = []
     for apt in data["airports"]:
         if apt["total_nearby"] == 0:
             continue
@@ -97,8 +98,8 @@ def take_snapshot():
                 apt["low_altitude"], apt["descending"], apt["climbing"], apt["total_nearby"],
             ])
             inserted += 1
-        except Exception:
-            pass
+        except Exception as e:
+            errors.append(f"{apt['icao']}: {e}")
 
     # Save airline breakdown
     airline_inserted = 0
@@ -111,8 +112,14 @@ def take_snapshot():
                     VALUES (?, ?, ?, ?, ?)
                 """, [ts, apt["icao"], apt["iata"], airline, count])
                 airline_inserted += 1
-            except Exception:
-                pass
+            except Exception as e:
+                errors.append(f"{apt['icao']}/{airline}: {e}")
+
+    if errors:
+        print(f"ERRORS ({len(errors)}):")
+        for err in errors[:10]:
+            print(f"  {err}")
+        sys.exit(1)
 
     con.close()
     print(f"Saved {inserted} airport readings + {airline_inserted} airline rows at {ts}")
