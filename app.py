@@ -639,6 +639,102 @@ if display_apts:
     st.plotly_chart(fig_health, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
     st.caption("Score uses ground ratio (40%), low-altitude density (35%), and flow balance (25%). Worst-component drag penalty prevents one good metric from hiding a crisis.")
 
+# Health Score trend line (historical)
+def _load_health_trend():
+    """Load per-snapshot system health scores for trend chart."""
+    token = os.environ.get("MOTHERDUCK_TOKEN", "")
+    if not token:
+        try:
+            token = st.secrets["MOTHERDUCK_TOKEN"]
+        except (KeyError, FileNotFoundError):
+            return None
+    if not token:
+        return None
+    try:
+        import duckdb
+        con = duckdb.connect(f"md:data_viz?motherduck_token={token}")
+        rows = con.execute("""
+            SELECT snapshot_time, icao, active, on_ground, airborne,
+                   low_altitude, descending, climbing, total_nearby
+            FROM airport_congestion
+            WHERE snapshot_time >= NOW() - INTERVAL 7 DAY
+            ORDER BY snapshot_time
+        """).fetchall()
+        con.close()
+        if len(rows) < 2:
+            return None
+
+        from collections import defaultdict
+        snapshots = defaultdict(list)
+        for r in rows:
+            snapshots[r[0]].append({
+                "icao": r[1], "active": r[2], "on_ground": r[3],
+                "airborne": r[4], "low_altitude": r[5],
+                "descending": r[6], "climbing": r[7], "total_nearby": r[8],
+            })
+
+        trend = []
+        for snap_time in sorted(snapshots.keys()):
+            airports = snapshots[snap_time]
+            scored = score_snapshot(airports, hist_baselines)
+            trend.append({"time": snap_time, "score": scored["system"]["score"],
+                          "healthy": scored["system"]["healthy"],
+                          "congested": scored["system"]["congested"]})
+        return trend
+    except Exception:
+        return None
+
+trend_data = _load_health_trend()
+if trend_data and len(trend_data) >= 3:
+    fig_trend = go.Figure()
+    times = [t["time"] for t in trend_data]
+    scores = [t["score"] for t in trend_data]
+
+    # Color the line segments by score band
+    fig_trend.add_trace(go.Scatter(
+        x=times, y=scores,
+        mode="lines+markers",
+        line=dict(color=SILVER, width=2),
+        marker=dict(
+            size=8,
+            color=scores,
+            colorscale=[
+                [0, SCORE_COLORS["red"]], [0.4, "#eab308"],
+                [0.7, SCORE_COLORS["green"]], [1, SCORE_COLORS["green"]]
+            ],
+            cmin=0, cmax=100,
+            line=dict(width=1, color="rgba(255,255,255,0.3)"),
+        ),
+        hovertemplate="<b>%{x|%b %d %I:%M %p}</b><br>Score: %{y}<extra></extra>",
+        showlegend=False,
+    ))
+
+    # Add threshold bands
+    fig_trend.add_hrect(y0=THRESHOLD_GREEN, y1=100, fillcolor="rgba(34,197,94,0.05)", line_width=0)
+    fig_trend.add_hrect(y0=THRESHOLD_YELLOW, y1=THRESHOLD_GREEN, fillcolor="rgba(234,179,8,0.04)", line_width=0)
+    fig_trend.add_hrect(y0=0, y1=THRESHOLD_YELLOW, fillcolor="rgba(239,68,68,0.04)", line_width=0)
+
+    # Threshold lines
+    fig_trend.add_hline(y=THRESHOLD_GREEN, line=dict(color="rgba(34,197,94,0.3)", width=1, dash="dot"),
+                        annotation_text="Healthy", annotation_position="right",
+                        annotation_font=dict(size=9, color="rgba(34,197,94,0.5)"))
+    fig_trend.add_hline(y=THRESHOLD_YELLOW, line=dict(color="rgba(234,179,8,0.3)", width=1, dash="dot"),
+                        annotation_text="Moderate", annotation_position="right",
+                        annotation_font=dict(size=9, color="rgba(234,179,8,0.5)"))
+
+    fig_trend.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=280,
+        font=dict(family="JetBrains Mono, monospace", color="white"),
+        margin=dict(l=40, r=60, t=10, b=30),
+        xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+        yaxis=dict(title="Score", range=[0, 105], gridcolor="rgba(255,255,255,0.05)"),
+    )
+    st.markdown(f'<div style="margin-top:8px;"><span class="section-header" style="font-size:0.85em;">Health Score Over Time</span></div>', unsafe_allow_html=True)
+    st.plotly_chart(fig_trend, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+
 # Map + Ground Congestion side by side
 st.markdown("---")
 map_col, ground_col = st.columns([3, 2])
