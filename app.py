@@ -480,65 +480,79 @@ with g3:
 # Per-airport health score table (sortable)
 display_apts = [(apt, sc) for apt, sc in scored["airports"] if apt.get("active", 0) > 0]
 
+def _bar_color(score):
+    """Red -> orange -> yellow -> green gradient for score 0-100."""
+    if score < 30:
+        return "#ef4444"  # red
+    elif score < 50:
+        t = (score - 30) / 20
+        r = int(239 + (245 - 239) * t)
+        g = int(68 + (158 - 68) * t)
+        b = int(68 + (11 - 68) * t)
+        return f"rgb({r},{g},{b})"  # red -> orange
+    elif score < 70:
+        t = (score - 50) / 20
+        r = int(245 + (234 - 245) * t)
+        g = int(158 + (179 - 158) * t)
+        b = int(11 + (8 - 11) * t)
+        return f"rgb({r},{g},{b})"  # orange -> yellow
+    else:
+        t = min((score - 70) / 30, 1.0)
+        r = int(234 + (34 - 234) * t)
+        g = int(179 + (197 - 179) * t)
+        b = int(8 + (94 - 8) * t)
+        return f"rgb({r},{g},{b})"  # yellow -> green
+
+def _score_bar_html(score):
+    if score is None:
+        return '<span style="color:#5C6F82;">-</span>'
+    color = _bar_color(score)
+    return (
+        f'<div style="display:flex;align-items:center;gap:8px;">'
+        f'<div style="flex:1;height:8px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden;">'
+        f'<div style="width:{score}%;height:100%;background:{color};border-radius:4px;"></div></div>'
+        f'<span style="min-width:24px;text-align:right;font-family:JetBrains Mono,monospace;font-size:0.8em;color:{color};">{score:.0f}</span></div>'
+    )
+
 if display_apts:
-    import pandas as pd
-    table_rows = []
+    _th_style = f'padding:6px 10px;text-align:left;color:{SILVER};font-size:0.65em;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid rgba(255,255,255,0.08);font-family:Inter,sans-serif;'
+    _td_style = f'padding:8px 10px;border-bottom:1px solid rgba(255,255,255,0.04);font-family:JetBrains Mono,monospace;font-size:0.8em;color:{WHITE};'
+    health_rows = ""
     for apt, sc in display_apts:
         icao = apt.get("icao", "")
         hist = airport_hist.get(icao, {})
-        table_rows.append({
-            "Airport": f'{apt["iata"]}',
-            "Name": apt.get("name", ""),
-            "Now": sc["score"],
-            "Status": sc["label"],
-            "3-Day": hist.get("avg_3d") if hist.get("avg_3d") is not None else None,
-            "7-Day": hist.get("avg_7d") if hist.get("avg_7d") is not None else None,
-            "Ground %": sc["components"]["ground_ratio"]["raw"],
-            "Flow Imbal": sc["components"]["flow_balance"]["raw"],
-            "Low Alt %": sc["components"]["low_alt_density"]["raw"],
-            "Active": apt.get("active", 0),
-        })
-    df_health = pd.DataFrame(table_rows)
+        now_score = sc["score"]
+        avg3 = hist.get("avg_3d")
+        avg7 = hist.get("avg_7d")
+        status_color = _score_color(now_score)
+        health_rows += f'''<tr>
+            <td style="{_td_style}font-weight:700;">{apt["iata"]}</td>
+            <td style="{_td_style}color:{SILVER};font-family:Inter,sans-serif;">{apt.get("name","")}</td>
+            <td style="{_td_style}min-width:120px;">{_score_bar_html(now_score)}</td>
+            <td style="{_td_style}color:{status_color};font-weight:600;font-size:0.75em;">{sc["label"]}</td>
+            <td style="{_td_style}min-width:120px;">{_score_bar_html(avg3)}</td>
+            <td style="{_td_style}min-width:120px;">{_score_bar_html(avg7)}</td>
+            <td style="{_td_style}text-align:right;">{sc["components"]["ground_ratio"]["raw"]:.0%}</td>
+            <td style="{_td_style}text-align:right;">{sc["components"]["flow_balance"]["raw"]:.0%}</td>
+            <td style="{_td_style}text-align:right;">{sc["components"]["low_alt_density"]["raw"]:.0%}</td>
+            <td style="{_td_style}text-align:right;">{apt.get("active",0)}</td>
+        </tr>'''
 
-    # Color-code scores
-    def _color_score(val):
-        if pd.isna(val):
-            return ""
-        if val >= THRESHOLD_GREEN:
-            return f"background-color: rgba(34,197,94,0.2); color: {SCORE_COLORS['green']}"
-        elif val >= THRESHOLD_YELLOW:
-            return f"background-color: rgba(234,179,8,0.15); color: #eab308"
-        return f"background-color: rgba(239,68,68,0.15); color: {SCORE_COLORS['red']}"
-
-    styled = df_health.style.applymap(
-        _color_score, subset=["Now", "3-Day", "7-Day"]
-    ).format({
-        "Ground %": "{:.0%}",
-        "Flow Imbal": "{:.0%}",
-        "Low Alt %": "{:.0%}",
-        "3-Day": lambda x: f"{x:.0f}" if pd.notna(x) else "-",
-        "7-Day": lambda x: f"{x:.0f}" if pd.notna(x) else "-",
-    })
-
-    st.dataframe(
-        df_health,
-        use_container_width=True,
-        hide_index=True,
-        height=min(600, len(table_rows) * 35 + 40),
-        column_config={
-            "Airport": st.column_config.TextColumn("Airport", width="small"),
-            "Name": st.column_config.TextColumn("Name", width="medium"),
-            "Now": st.column_config.ProgressColumn("Now", min_value=0, max_value=100, format="%d"),
-            "Status": st.column_config.TextColumn("Status", width="small"),
-            "3-Day": st.column_config.ProgressColumn("3-Day Avg", min_value=0, max_value=100, format="%d"),
-            "7-Day": st.column_config.ProgressColumn("7-Day Avg", min_value=0, max_value=100, format="%d"),
-            "Ground %": st.column_config.NumberColumn("Ground %", format="%.0f%%"),
-            "Flow Imbal": st.column_config.NumberColumn("Flow Imbal", format="%.0f%%"),
-            "Low Alt %": st.column_config.NumberColumn("Low Alt %", format="%.0f%%"),
-            "Active": st.column_config.NumberColumn("Active", format="%d"),
-        },
-    )
-    st.caption("Click any column header to sort. Score = ground ratio (40%) + low-alt density (35%) + flow balance (25%).")
+    st.html(f'''
+    <style>@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap');</style>
+    <div style="overflow-x:auto;max-height:600px;overflow-y:auto;">
+    <table style="width:100%;border-collapse:collapse;">
+        <thead><tr>
+            <th style="{_th_style}">Airport</th><th style="{_th_style}">Name</th>
+            <th style="{_th_style}min-width:120px;">Now</th><th style="{_th_style}">Status</th>
+            <th style="{_th_style}min-width:120px;">3-Day Avg</th><th style="{_th_style}min-width:120px;">7-Day Avg</th>
+            <th style="{_th_style}text-align:right;">Ground %</th><th style="{_th_style}text-align:right;">Flow Imbal</th>
+            <th style="{_th_style}text-align:right;">Low Alt %</th><th style="{_th_style}text-align:right;">Active</th>
+        </tr></thead>
+        <tbody>{health_rows}</tbody>
+    </table></div>
+    ''')
+    st.caption("Score = ground ratio (40%) + low-alt density (35%) + flow balance (25%).")
 
 # Health Score trend line (from cached historical data)
 if trend_data and len(trend_data) >= 3:
