@@ -294,8 +294,9 @@ st.html(f"""
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&display=swap');
 </style>
 <div style="font-family:'Inter',sans-serif;">
-    <div style="display:flex;justify-content:flex-end;gap:16px;margin-bottom:6px;font-size:0.55em;color:{SILVER_DARK};font-family:'JetBrains Mono',monospace;">
-        <span>g = ground</span><span>l = low alt</span><span>d = descending</span><span>c = climbing</span>
+    <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:0.55em;color:{SILVER_DARK};font-family:'JetBrains Mono',monospace;">
+        <span>Ranked by active aircraft count (on ground + low altitude within 20km)</span>
+        <span style="display:flex;gap:12px;"><span>g = ground</span><span>l = low alt</span><span>d = descending</span><span>c = climbing</span></span>
     </div>
     {leaderboard_html}
 </div>
@@ -557,7 +558,7 @@ def _make_gauge(score, title, subtitle=""):
         ),
     ))
     fig.add_annotation(
-        x=0.5, y=0.18, text=label, showarrow=False,
+        x=0.5, y=-0.05, text=label, showarrow=False,
         font=dict(size=13, color=color, family="Inter", weight=700),
     )
     fig.update_layout(
