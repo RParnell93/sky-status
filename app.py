@@ -682,6 +682,58 @@ if top_airports:
     )
     st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
+# Airline breakdown
+all_airlines = {}
+for apt in snapshot["airports"]:
+    for airline, count in apt.get("airlines", {}).items():
+        all_airlines[airline] = all_airlines.get(airline, 0) + count
+
+if all_airlines:
+    st.markdown("---")
+    st.markdown(f'<div class="section-header">Airline Breakdown</div>', unsafe_allow_html=True)
+
+    # Sort and take top 12, group the rest as "Other"
+    sorted_airlines = sorted(all_airlines.items(), key=lambda x: -x[1])
+    top_n = 12
+    top_airlines = sorted_airlines[:top_n]
+    other_count = sum(c for _, c in sorted_airlines[top_n:])
+    existing_other = next((c for name, c in top_airlines if name == "Other"), 0)
+    top_airlines = [(name, c) for name, c in top_airlines if name != "Other"]
+    if other_count + existing_other > 0:
+        top_airlines.append(("Other", other_count + existing_other))
+    top_airlines.sort(key=lambda x: x[1])
+
+    # Assign colors - major carriers get brand colors
+    AIRLINE_COLORS = {
+        "Delta": "#C8102E", "American": "#0078D2", "United": "#002244",
+        "Southwest": "#F9B612", "JetBlue": "#003DA5", "Spirit": "#FFD200",
+        "Frontier": "#006847", "Alaska": "#01426A", "Hawaiian": "#2D1E5B",
+        "SkyWest": "#8B9DAF", "FedEx": "#660099", "UPS": "#351C15",
+    }
+    bar_colors = [AIRLINE_COLORS.get(name, SILVER_DARK) for name, _ in top_airlines]
+
+    fig_airline = go.Figure(go.Bar(
+        y=[name for name, _ in top_airlines],
+        x=[count for _, count in top_airlines],
+        orientation="h",
+        marker_color=bar_colors,
+        text=[count for _, count in top_airlines],
+        textposition="outside",
+        textfont=dict(color="white", size=10, family="JetBrains Mono"),
+        hoverinfo="none",
+    ))
+    fig_airline.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=max(280, len(top_airlines) * 30 + 60),
+        font=dict(family="JetBrains Mono, monospace", color="white"),
+        margin=dict(l=80, r=40, t=10, b=30),
+        xaxis=dict(title="Aircraft Near Airports", gridcolor="rgba(255,255,255,0.05)"),
+        yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+    )
+    st.plotly_chart(fig_airline, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+
 # Congestion heatmap (needs historical data from MotherDuck)
 def _load_heatmap_data():
     token = os.environ.get("MOTHERDUCK_TOKEN", "")

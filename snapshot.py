@@ -56,7 +56,17 @@ def setup_tables():
             PRIMARY KEY (snapshot_time, icao)
         )
     """)
-    print("Table created (or already exists).")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS airport_airlines (
+            snapshot_time TIMESTAMP,
+            icao VARCHAR,
+            iata VARCHAR,
+            airline VARCHAR,
+            count INTEGER,
+            PRIMARY KEY (snapshot_time, icao, airline)
+        )
+    """)
+    print("Tables created (or already exist).")
     con.close()
 
 
@@ -90,13 +100,27 @@ def take_snapshot():
         except Exception:
             pass
 
+    # Save airline breakdown
+    airline_inserted = 0
+    for apt in data["airports"]:
+        for airline, count in apt.get("airlines", {}).items():
+            try:
+                con.execute("""
+                    INSERT OR IGNORE INTO airport_airlines
+                    (snapshot_time, icao, iata, airline, count)
+                    VALUES (?, ?, ?, ?, ?)
+                """, [ts, apt["icao"], apt["iata"], airline, count])
+                airline_inserted += 1
+            except Exception:
+                pass
+
     con.close()
-    print(f"Saved {inserted} airport readings at {ts}")
+    print(f"Saved {inserted} airport readings + {airline_inserted} airline rows at {ts}")
     print(f"Total US aircraft: {total}")
-    # Show top 5
     top5 = sorted(data["airports"], key=lambda x: x["active"], reverse=True)[:5]
     for i, a in enumerate(top5, 1):
-        print(f"  {i}. {a['iata']} {a['name']}: {a['active']} active")
+        airlines_str = ", ".join(f"{k}:{v}" for k, v in sorted(a.get("airlines", {}).items(), key=lambda x: -x[1])[:3])
+        print(f"  {i}. {a['iata']} {a['name']}: {a['active']} active ({airlines_str})")
 
 
 def check_db():

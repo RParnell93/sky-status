@@ -12,6 +12,26 @@ from airports import AIRPORTS
 AIRPORT_RADIUS_KM = 20  # ~10.8 nautical miles
 LOW_ALT_METERS = 3048   # 10,000 feet - aircraft likely arriving/departing
 
+# ICAO callsign prefix -> airline name (major US + international carriers)
+AIRLINE_PREFIXES = {
+    "AAL": "American", "DAL": "Delta", "UAL": "United", "SWA": "Southwest",
+    "JBU": "JetBlue", "NKS": "Spirit", "FFT": "Frontier", "ASA": "Alaska",
+    "HAL": "Hawaiian", "SKW": "SkyWest", "RPA": "Republic", "ENY": "Envoy",
+    "PDT": "Piedmont", "MES": "Mesa", "GJS": "GoJet", "CPZ": "Compass",
+    "EJA": "NetJets", "FDX": "FedEx", "UPS": "UPS", "GTI": "Atlas Air",
+    "ACA": "Air Canada", "BAW": "British Airways", "DLH": "Lufthansa",
+    "AFR": "Air France", "UAE": "Emirates", "JAL": "JAL", "ANA": "ANA",
+    "QFA": "Qantas", "KLM": "KLM", "ETH": "Ethiopian",
+}
+
+
+def parse_airline(callsign):
+    """Extract airline name from ICAO callsign prefix (first 3 chars)."""
+    if not callsign or len(callsign) < 3:
+        return "Other"
+    prefix = callsign[:3].upper()
+    return AIRLINE_PREFIXES.get(prefix, "Other")
+
 
 def haversine_km(lat1, lon1, lat2, lon2):
     """Distance between two points in km."""
@@ -70,6 +90,12 @@ def calculate_congestion(aircraft):
         descending = [a for a in airborne if a["vertical_rate"] is not None and a["vertical_rate"] < -1]
         climbing = [a for a in airborne if a["vertical_rate"] is not None and a["vertical_rate"] > 1]
 
+        # Count aircraft by airline
+        airline_counts = {}
+        for ac in nearby:
+            airline = parse_airline(ac.get("callsign", ""))
+            airline_counts[airline] = airline_counts.get(airline, 0) + 1
+
         results.append({
             "icao": apt["icao"],
             "iata": apt["iata"],
@@ -83,7 +109,8 @@ def calculate_congestion(aircraft):
             "low_altitude": len(low_alt),
             "descending": len(descending),
             "climbing": len(climbing),
-            "active": len(low_alt) + len(on_ground),  # primary congestion metric
+            "active": len(low_alt) + len(on_ground),
+            "airlines": airline_counts,
             "aircraft": nearby,
         })
 
