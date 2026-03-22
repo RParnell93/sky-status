@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from fetch import get_congestion_snapshot
 
-st.set_page_config(page_title="Sky Status", page_icon="✈", layout="wide")
+st.set_page_config(page_title="Sky Status", page_icon="favicon.svg", layout="wide")
 
 # Delta-inspired palette
 # Navy: #003366 / #00234B  Red: #C8102E  White  Silver: #8B9DAF  Light gray: #E8ECF0
@@ -278,74 +278,121 @@ st.html(f"""
 </div>
 """)
 
-# Map
+# Map + Ground Congestion side by side
 st.markdown("---")
-st.markdown(f'<div class="section-header">Live Airspace Map</div>', unsafe_allow_html=True)
+map_col, ground_col = st.columns([3, 2])
 
 apt_data = [a for a in snapshot["airports"] if a["active"] > 0]
-if apt_data:
-    fig = go.Figure()
 
-    # Aircraft dots
-    aircraft_lats = []
-    aircraft_lons = []
-    aircraft_texts = []
-    for apt in snapshot["airports"]:
-        for ac in apt.get("aircraft", []):
-            if not ac["on_ground"]:
-                aircraft_lats.append(ac["lat"])
-                aircraft_lons.append(ac["lon"])
-                aircraft_texts.append(ac["callsign"] or ac["icao24"])
+with map_col:
+    st.markdown(f'<div class="section-header">Live Airspace Map</div>', unsafe_allow_html=True)
+    if apt_data:
+        fig = go.Figure()
 
-    if aircraft_lats:
+        # Aircraft dots
+        aircraft_lats = []
+        aircraft_lons = []
+        aircraft_texts = []
+        for apt in snapshot["airports"]:
+            for ac in apt.get("aircraft", []):
+                if not ac["on_ground"]:
+                    aircraft_lats.append(ac["lat"])
+                    aircraft_lons.append(ac["lon"])
+                    aircraft_texts.append(ac["callsign"] or ac["icao24"])
+
+        if aircraft_lats:
+            fig.add_trace(go.Scattergeo(
+                lat=aircraft_lats, lon=aircraft_lons,
+                mode="markers",
+                marker=dict(size=3, color=SILVER, opacity=0.3),
+                text=aircraft_texts,
+                hoverinfo="text",
+                showlegend=False,
+            ))
+
+        import math
+        max_act = max(a["active"] for a in apt_data) or 1
         fig.add_trace(go.Scattergeo(
-            lat=aircraft_lats, lon=aircraft_lons,
-            mode="markers",
-            marker=dict(size=3, color=SILVER, opacity=0.3),
-            text=aircraft_texts,
+            lat=[a["lat"] for a in apt_data],
+            lon=[a["lon"] for a in apt_data],
+            mode="markers+text",
+            marker=dict(
+                size=[8 + 20 * math.log1p(a["active"]) / math.log1p(max_act) for a in apt_data],
+                color=[a["active"] for a in apt_data],
+                colorscale=[[0, NAVY_LIGHT], [0.4, SILVER], [0.7, RED_LIGHT], [1, RED]],
+                opacity=0.75,
+                line=dict(width=1, color="rgba(255,255,255,0.5)"),
+            ),
+            text=[f'{a["iata"]} {a["active"]}' for a in apt_data],
+            textposition="top center",
+            textfont=dict(size=8, color="white", family="JetBrains Mono"),
+            hovertext=[f"<b>{a['iata']}</b> {a['name']}<br>Active: {a['active']}<br>Ground: {a['on_ground']}<br>Arriving: {a['descending']}  Departing: {a['climbing']}" for a in apt_data],
             hoverinfo="text",
             showlegend=False,
         ))
 
-    # Airport bubbles - Delta color ramp
-    fig.add_trace(go.Scattergeo(
-        lat=[a["lat"] for a in apt_data],
-        lon=[a["lon"] for a in apt_data],
-        mode="markers+text",
-        marker=dict(
-            size=[max(a["active"] * 4, 8) for a in apt_data],
-            color=[a["active"] for a in apt_data],
-            colorscale=[[0, NAVY_LIGHT], [0.4, SILVER], [0.7, RED_LIGHT], [1, RED]],
-            opacity=0.8,
-            line=dict(width=1, color="white"),
-        ),
-        text=[a["iata"] for a in apt_data],
-        textposition="top center",
-        textfont=dict(size=9, color="white", family="JetBrains Mono"),
-        hovertext=[f"<b>{a['iata']}</b> {a['name']}<br>Active: {a['active']}<br>Ground: {a['on_ground']}<br>Low Alt: {a['low_altitude']}" for a in apt_data],
-        hoverinfo="text",
-        showlegend=False,
-    ))
+        fig.update_geos(
+            scope="usa",
+            bgcolor="rgba(0,0,0,0)",
+            landcolor=NAVY_MID,
+            lakecolor=NAVY,
+            showlakes=True,
+            coastlinecolor=SILVER_DARK,
+            countrycolor=SILVER_DARK,
+            subunitcolor="rgba(92,111,130,0.27)",
+        )
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            height=550,
+            margin=dict(t=10, b=10, l=10, r=10),
+            font=dict(family="Inter, sans-serif"),
+        )
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
-    fig.update_geos(
-        scope="usa",
-        bgcolor="rgba(0,0,0,0)",
-        landcolor=NAVY_MID,
-        lakecolor=NAVY,
-        showlakes=True,
-        coastlinecolor=SILVER_DARK,
-        countrycolor=SILVER_DARK,
-        subunitcolor="rgba(92,111,130,0.27)",
-    )
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        height=500,
-        margin=dict(t=10, b=10, l=10, r=10),
-        font=dict(family="Inter, sans-serif"),
-    )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+with ground_col:
+    st.markdown(f'<div class="section-header">Ground Congestion</div>', unsafe_allow_html=True)
+    ground_apts = [a for a in snapshot["airports"] if a["on_ground"] > 0 and a["active"] >= 3]
+    if ground_apts:
+        for a in ground_apts:
+            a["_ground_pct"] = round(a["on_ground"] / a["active"] * 100) if a["active"] else 0
+        ground_apts.sort(key=lambda a: a["_ground_pct"])
+        ground_apts = ground_apts[-15:]
+
+        bar_colors = []
+        for a in ground_apts:
+            pct = a["_ground_pct"]
+            if pct >= 70:
+                bar_colors.append(RED)
+            elif pct >= 40:
+                bar_colors.append(RED_LIGHT)
+            else:
+                bar_colors.append(SILVER)
+
+        fig_ground = go.Figure()
+        fig_ground.add_trace(go.Bar(
+            y=[a["iata"] for a in ground_apts],
+            x=[a["_ground_pct"] for a in ground_apts],
+            orientation="h",
+            marker_color=bar_colors,
+            text=[f'{a["_ground_pct"]}% ({a["on_ground"]}/{a["active"]})' for a in ground_apts],
+            textposition="outside",
+            textfont=dict(color="white", size=10, family="JetBrains Mono"),
+            hovertext=[f"<b>{a['iata']}</b> {a['name']}<br>{a['on_ground']} on ground / {a['active']} active ({a['_ground_pct']}%)" for a in ground_apts],
+            hoverinfo="text",
+        ))
+        fig_ground.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            height=550,
+            font=dict(family="JetBrains Mono, monospace", color="white"),
+            margin=dict(l=45, r=80, t=10, b=30),
+            xaxis=dict(title="% on Ground", range=[0, 105], gridcolor="rgba(255,255,255,0.05)"),
+            yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+        )
+        st.plotly_chart(fig_ground, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
 # Ground vs Air donut + Arrival/Departure flow side by side
 st.markdown("---")
@@ -420,51 +467,6 @@ with col_right:
             xaxis=dict(zeroline=True, zerolinecolor=SILVER_DARK, zerolinewidth=1, title="Aircraft Count"),
         )
         st.plotly_chart(fig_flow, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
-
-# Ground congestion bar
-st.markdown("---")
-st.markdown(f'<div class="section-header">Ground Congestion</div>', unsafe_allow_html=True)
-ground_apts = [a for a in snapshot["airports"] if a["on_ground"] > 0 and a["active"] >= 3]
-if ground_apts:
-    for a in ground_apts:
-        a["_ground_pct"] = round(a["on_ground"] / a["active"] * 100) if a["active"] else 0
-    ground_apts.sort(key=lambda a: a["_ground_pct"])
-    ground_apts = ground_apts[-15:]  # top 15 by ground %
-
-    bar_colors = []
-    for a in ground_apts:
-        pct = a["_ground_pct"]
-        if pct >= 70:
-            bar_colors.append(RED)
-        elif pct >= 40:
-            bar_colors.append(RED_LIGHT)
-        else:
-            bar_colors.append(SILVER)
-
-    fig_ground = go.Figure()
-    fig_ground.add_trace(go.Bar(
-        y=[a["iata"] for a in ground_apts],
-        x=[a["_ground_pct"] for a in ground_apts],
-        orientation="h",
-        marker_color=bar_colors,
-        text=[f'{a["_ground_pct"]}%  ({a["on_ground"]}/{a["active"]})' for a in ground_apts],
-        textposition="outside",
-        textfont=dict(color="white", size=11, family="JetBrains Mono"),
-        hovertext=[f"<b>{a['iata']}</b> {a['name']}<br>{a['on_ground']} on ground / {a['active']} active ({a['_ground_pct']}%)" for a in ground_apts],
-        hoverinfo="text",
-    ))
-    fig_ground.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        height=max(280, len(ground_apts) * 30 + 60),
-        font=dict(family="JetBrains Mono, monospace", color="white"),
-        margin=dict(l=45, r=80, t=10, b=30),
-        xaxis=dict(title="% of Active Aircraft on Ground", range=[0, 105], gridcolor="rgba(255,255,255,0.05)"),
-        yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-    )
-    st.plotly_chart(fig_ground, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
-    st.caption("Higher ground % means more planes sitting at gates or taxiways vs flying. Red bars flag potential delay hotspots.")
 
 # Stacked bar
 st.markdown("---")
