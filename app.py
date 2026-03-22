@@ -69,6 +69,7 @@ CSS = f"""
     }}
     .metric-value {{ font-size: 2em; font-weight: 900; color: {WHITE}; font-family: 'JetBrains Mono', monospace !important; }}
     .metric-label {{ font-size: 0.65em; color: {SILVER}; text-transform: uppercase; letter-spacing: 1.5px; margin-top: 4px; font-weight: 600; }}
+    .metric-sub {{ font-size: 0.55em; color: {SILVER_DARK}; margin-top: 5px; line-height: 1.3; }}
 
     /* Leaderboard */
     .leaderboard-row {{
@@ -232,22 +233,22 @@ ground_pct = round(total_ground / total_active * 100) if total_active else 0
 
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 with c1:
-    st.markdown(f'<div class="metric-card"><div class="metric-value">{snapshot["total_us_aircraft"]:,}</div><div class="metric-label">Aircraft Over US</div></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="metric-card"><div class="metric-value">{snapshot["total_us_aircraft"]:,}</div><div class="metric-label">Aircraft Over US</div><div class="metric-sub">All ADS-B transponders in US airspace</div></div>', unsafe_allow_html=True)
 with c2:
-    st.markdown(f'<div class="metric-card"><div class="metric-value">{active_airports}</div><div class="metric-label">Active Airports</div></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="metric-card"><div class="metric-value">{active_airports}</div><div class="metric-label">Active Airports</div><div class="metric-sub">With at least 1 aircraft nearby</div></div>', unsafe_allow_html=True)
 with c3:
-    st.markdown(f'<div class="metric-card"><div class="metric-value">{total_active}</div><div class="metric-label">Near Airports</div></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="metric-card"><div class="metric-value">{total_active}</div><div class="metric-label">Near Airports</div><div class="metric-sub">Within 20km and below 10,000ft</div></div>', unsafe_allow_html=True)
 with c4:
     if busiest:
         busiest_gpct = round(busiest["on_ground"] / busiest["active"] * 100) if busiest["active"] else 0
-        st.markdown(f'<div class="metric-card"><div class="metric-value">{busiest["iata"]}</div><div class="metric-label">Busiest Right Now</div><div style="font-size:0.7em;color:{SILVER};margin-top:6px;font-family:JetBrains Mono,monospace;">{busiest["active"]} active - {busiest_gpct}% on ground</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-value">{busiest["iata"]}</div><div class="metric-label">Busiest Right Now</div><div class="metric-sub">{busiest["active"]} active, {busiest_gpct}% on ground</div></div>', unsafe_allow_html=True)
 with c5:
-    st.markdown(f'<div class="metric-card"><div class="metric-value">{ground_pct}%</div><div class="metric-label">On Ground</div></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="metric-card"><div class="metric-value">{ground_pct}%</div><div class="metric-label">On Ground</div><div class="metric-sub">At gates, taxiways, or runways</div></div>', unsafe_allow_html=True)
 with c6:
     total_airborne = sum(a["airborne"] for a in snapshot["airports"])
     arrival_pct = round(total_descending / total_airborne * 100) if total_airborne else 0
     arr_color = RED if arrival_pct >= 60 else RED_LIGHT if arrival_pct >= 40 else WHITE
-    st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:{arr_color}">{total_descending}</div><div class="metric-label">Inbound Now</div></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="metric-card"><div class="metric-value" style="color:{arr_color}">{total_descending}</div><div class="metric-label">Inbound Now</div><div class="metric-sub">Descending within 20km right now</div></div>', unsafe_allow_html=True)
 
 _src = snapshot.get("source", "OpenSky")
 st.caption(f"Updated: {local_ts}  |  Source: {_src}  |  Refreshes every 2 min")
