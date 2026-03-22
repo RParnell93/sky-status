@@ -1,6 +1,7 @@
-"""Top 30 US airports by passenger traffic with coordinates."""
+"""Top 50 US airports by passenger traffic with coordinates."""
 
 AIRPORTS = [
+    # Top 30
     {"icao": "KATL", "iata": "ATL", "name": "Atlanta", "city": "Atlanta", "lat": 33.6407, "lon": -84.4277},
     {"icao": "KLAX", "iata": "LAX", "name": "Los Angeles", "city": "Los Angeles", "lat": 33.9425, "lon": -118.4081},
     {"icao": "KORD", "iata": "ORD", "name": "O'Hare", "city": "Chicago", "lat": 41.9742, "lon": -87.9073},
@@ -31,4 +32,25 @@ AIRPORTS = [
     {"icao": "KCLT", "iata": "CLT", "name": "Charlotte", "city": "Charlotte", "lat": 35.2141, "lon": -80.9431},
     {"icao": "KPDX", "iata": "PDX", "name": "Portland", "city": "Portland", "lat": 45.5898, "lon": -122.5951},
     {"icao": "KSTL", "iata": "STL", "name": "St. Louis", "city": "St. Louis", "lat": 38.7487, "lon": -90.3700},
+    # 31-50
+    {"icao": "KMDW", "iata": "MDW", "name": "Chicago Midway", "city": "Chicago", "lat": 41.7868, "lon": -87.7522},
+    {"icao": "KHNL", "iata": "HNL", "name": "Honolulu", "city": "Honolulu", "lat": 21.3187, "lon": -157.9224},
+    {"icao": "KAUS", "iata": "AUS", "name": "Austin", "city": "Austin", "lat": 30.1975, "lon": -97.6664},
+    {"icao": "KBNA", "iata": "BNA", "name": "Nashville", "city": "Nashville", "lat": 36.1263, "lon": -86.6774},
+    {"icao": "KRDU", "iata": "RDU", "name": "Raleigh-Durham", "city": "Raleigh", "lat": 35.8776, "lon": -78.7875},
+    {"icao": "KSMF", "iata": "SMF", "name": "Sacramento", "city": "Sacramento", "lat": 38.6954, "lon": -121.5908},
+    {"icao": "KSJC", "iata": "SJC", "name": "San Jose", "city": "San Jose", "lat": 37.3626, "lon": -121.9291},
+    {"icao": "KOAK", "iata": "OAK", "name": "Oakland", "city": "Oakland", "lat": 37.7213, "lon": -122.2208},
+    {"icao": "KCLE", "iata": "CLE", "name": "Cleveland", "city": "Cleveland", "lat": 41.4117, "lon": -81.8498},
+    {"icao": "KPIT", "iata": "PIT", "name": "Pittsburgh", "city": "Pittsburgh", "lat": 40.4915, "lon": -80.2329},
+    {"icao": "KSAT", "iata": "SAT", "name": "San Antonio", "city": "San Antonio", "lat": 29.5337, "lon": -98.4698},
+    {"icao": "KMKE", "iata": "MKE", "name": "Milwaukee", "city": "Milwaukee", "lat": 42.9472, "lon": -87.8966},
+    {"icao": "KRSW", "iata": "RSW", "name": "Fort Myers", "city": "Fort Myers", "lat": 26.5362, "lon": -81.7552},
+    {"icao": "KPBI", "iata": "PBI", "name": "West Palm Beach", "city": "West Palm Beach", "lat": 26.6832, "lon": -80.0956},
+    {"icao": "KIND", "iata": "IND", "name": "Indianapolis", "city": "Indianapolis", "lat": 39.7173, "lon": -86.2944},
+    {"icao": "KCVG", "iata": "CVG", "name": "Cincinnati", "city": "Cincinnati", "lat": 39.0488, "lon": -84.6678},
+    {"icao": "KJAX", "iata": "JAX", "name": "Jacksonville", "city": "Jacksonville", "lat": 30.4941, "lon": -81.6879},
+    {"icao": "KABQ", "iata": "ABQ", "name": "Albuquerque", "city": "Albuquerque", "lat": 35.0402, "lon": -106.6092},
+    {"icao": "KANC", "iata": "ANC", "name": "Anchorage", "city": "Anchorage", "lat": 61.1743, "lon": -149.9962},
+    {"icao": "KOMA", "iata": "OMA", "name": "Omaha", "city": "Omaha", "lat": 41.3032, "lon": -95.8941},
 ]

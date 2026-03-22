@@ -139,18 +139,97 @@ CSS = f"""
 
     /* Mobile responsiveness */
     @media (max-width: 768px) {{
-        .sky-title {{ font-size: clamp(1.3rem, 4vw, 2.2rem); letter-spacing: 1px; }}
-        .sky-subtitle {{ font-size: 0.7em; }}
-        .metric-card {{ padding: 12px 8px; }}
-        .metric-value {{ font-size: clamp(1.3rem, 5vw, 2em); }}
-        .metric-label {{ font-size: 0.55em; letter-spacing: 1px; }}
-        .metric-sub {{ font-size: 0.5em; }}
-        .leaderboard-row {{ padding: 8px 10px; gap: 8px; }}
+        /* Header */
+        .sky-header {{ padding: 14px 0 10px 0; margin-bottom: 12px; }}
+        .sky-title {{
+            font-size: clamp(1.2rem, 5vw, 2.2rem);
+            letter-spacing: 1px; gap: 8px;
+            flex-wrap: wrap;
+        }}
+        .sky-title svg {{ width: 28px; height: 28px; }}
+        .sky-title .delta-widget {{ font-size: 0.4em; padding: 3px 8px; }}
+        .sky-subtitle {{ font-size: clamp(0.6rem, 2.5vw, 0.8rem); }}
+
+        /* Metric cards - 3x2 grid instead of 6 across */
+        div[data-testid="stHorizontalBlock"] {{ gap: 0.5rem !important; flex-wrap: wrap !important; }}
+        div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {{
+            min-width: 30% !important;
+            flex: 1 1 30% !important;
+        }}
+        .metric-card {{
+            padding: 10px 6px;
+            overflow-wrap: break-word;
+            word-break: break-word;
+        }}
+        .metric-value {{ font-size: clamp(1.2rem, 5vw, 2em); }}
+        .metric-label {{ font-size: clamp(0.45rem, 1.8vw, 0.65em); letter-spacing: 0.5px; }}
+        .metric-sub {{ font-size: clamp(0.4rem, 1.5vw, 0.55em); line-height: 1.2; }}
+
+        /* Leaderboard */
+        .leaderboard-row {{ padding: 8px 8px; gap: 6px; }}
+        .lb-rank {{ font-size: 0.85em; min-width: 20px; }}
+        .lb-iata {{ font-size: 0.95em; min-width: 34px; }}
         .lb-name {{ display: none; }}
-        .lb-detail {{ font-size: 0.5em; min-width: 60px; }}
-        .lb-bar-bg {{ min-width: 60px; }}
-        .section-header {{ font-size: 0.9em; }}
-        div[data-testid="stHorizontalBlock"] {{ gap: 0.5rem !important; }}
+        .lb-bar-bg {{ min-width: 50px; flex: 1.5; height: 18px; }}
+        .lb-count {{ font-size: 0.8em; min-width: 24px; }}
+        .lb-detail {{ font-size: 0.45em; min-width: 50px; }}
+
+        /* Section headers */
+        .section-header {{ font-size: clamp(0.8rem, 2.5vw, 1.1em); }}
+
+        /* Touch targets - minimum 44px for tappable elements */
+        button, [role="button"],
+        .stSelectbox > div > div,
+        [data-testid="stSelectbox"] > div > div {{
+            min-height: 44px !important;
+        }}
+        [data-testid="stExpander"] summary {{
+            min-height: 44px !important;
+            display: flex;
+            align-items: center;
+        }}
+        /* Selectbox font readable on mobile */
+        .stSelectbox label, [data-testid="stSelectbox"] label {{
+            font-size: clamp(0.75rem, 2.5vw, 0.875rem) !important;
+        }}
+
+        /* AI summary card */
+        div[style*="border-left:3px solid"] {{
+            padding: 0.75rem 1rem !important;
+        }}
+
+        /* General overflow protection */
+        .stApp div {{
+            overflow-wrap: break-word;
+        }}
+    }}
+
+    /* Extra small screens (phones in portrait) */
+    @media (max-width: 480px) {{
+        .sky-title {{ font-size: clamp(1rem, 5vw, 1.5rem); letter-spacing: 0.5px; }}
+        .sky-title .delta-widget {{ font-size: 0.35em; }}
+        .metric-value {{ font-size: clamp(1rem, 4.5vw, 1.5rem); }}
+        .metric-label {{ font-size: clamp(0.4rem, 1.6vw, 0.55em); letter-spacing: 0; }}
+        .metric-sub {{ display: none; }}
+        .leaderboard-row {{ padding: 6px 6px; gap: 4px; }}
+        .lb-detail {{ display: none; }}
+        .lb-bar-bg {{ min-width: 40px; }}
+    }}
+
+    /* Plotly chart height cap on mobile - map and side-by-side charts */
+    @media (max-width: 768px) {{
+        [data-testid="stPlotlyChart"] > div {{
+            max-height: 400px !important;
+        }}
+    }}
+
+    /* Data dictionary table scroll on mobile */
+    @media (max-width: 768px) {{
+        [data-testid="stExpander"] table {{
+            display: block;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }}
     }}
 </style>
 """
@@ -421,8 +500,8 @@ def _make_gauge(score, title, subtitle=""):
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=score,
-        number=dict(font=dict(size=48, family="JetBrains Mono", color=WHITE), suffix=""),
-        title=dict(text=f"<b>{title}</b><br><span style='font-size:13px;color:{SILVER}'>{subtitle}</span>", font=dict(size=15, color=WHITE, family="Inter")),
+        number=dict(font=dict(size=36, family="JetBrains Mono", color=WHITE), suffix=""),
+        title=dict(text=f"<b>{title}</b><br><span style='font-size:11px;color:{SILVER}'>{subtitle}</span>", font=dict(size=13, color=WHITE, family="Inter")),
         gauge=dict(
             axis=dict(range=[0, 100], tickwidth=0, tickcolor="rgba(0,0,0,0)", tickfont=dict(size=1, color="rgba(0,0,0,0)")),
             bar=dict(color=color, thickness=0.75),
@@ -438,14 +517,14 @@ def _make_gauge(score, title, subtitle=""):
     ))
     fig.add_annotation(
         x=0.5, y=-0.15, text=label, showarrow=False,
-        font=dict(size=15, color=color, family="Inter", weight=700),
+        font=dict(size=13, color=color, family="Inter", weight=700),
     )
     fig.update_layout(
         template="plotly_dark",
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        height=280,
-        margin=dict(t=60, b=30, l=30, r=30),
+        height=250,
+        margin=dict(t=50, b=25, l=20, r=20),
         font=dict(family="Inter, sans-serif"),
     )
     return fig
@@ -465,15 +544,15 @@ st.markdown(f'<div class="section-header" style="margin-bottom:0.75rem;">Traffic
 g1, g2, g3 = st.columns(3, gap="large")
 with g1:
     _sub = f'{sys_info["healthy"]} healthy, {sys_info["moderate"]} moderate, {sys_info["congested"]} congested'
-    st.plotly_chart(_make_gauge(current_score, "NOW", _sub), use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(_make_gauge(current_score, "NOW", _sub), use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 with g2:
     if avg_3d is not None:
-        st.plotly_chart(_make_gauge(avg_3d, "3-DAY AVG", f"{n_hist} snapshots"), use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(_make_gauge(avg_3d, "3-DAY AVG", f"{n_hist} snapshots"), use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
     else:
         st.markdown(f'<div style="text-align:center;padding:60px 0;color:{SILVER_DARK};font-size:0.85em;">3-day average<br>needs more snapshots</div>', unsafe_allow_html=True)
 with g3:
     if avg_7d is not None:
-        st.plotly_chart(_make_gauge(avg_7d, "7-DAY AVG", f"{n_hist} snapshots"), use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(_make_gauge(avg_7d, "7-DAY AVG", f"{n_hist} snapshots"), use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
     else:
         st.markdown(f'<div style="text-align:center;padding:60px 0;color:{SILVER_DARK};font-size:0.85em;">7-day average<br>needs more snapshots</div>', unsafe_allow_html=True)
 
@@ -542,8 +621,17 @@ if display_apts:
         </tr>'''
 
     st.html(f'''
-    <style>@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap');</style>
-    <div style="overflow-x:auto;max-height:600px;overflow-y:auto;">
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap');
+    .health-scroll-wrapper {{
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        max-height: 600px;
+        overflow-y: auto;
+    }}
+    .health-scroll-wrapper table {{ min-width: 700px; }}
+    </style>
+    <div class="health-scroll-wrapper">
     <table style="width:100%;border-collapse:collapse;">
         <thead><tr>
             <th style="{_th_style}">Airport</th><th style="{_th_style}">Name</th>
@@ -710,8 +798,8 @@ if HAS_ANTHROPIC:
         st.markdown(
             f'<div style="background:linear-gradient(135deg, {NAVY_MID} 0%, {NAVY} 100%); '
             f'padding:1rem 1.5rem; border-radius:8px; border-left:3px solid {RED}; '
-            f'margin:0.5rem 0 1rem 0;">'
-            f'<span style="color:{WHITE}; font-size:0.92rem; line-height:1.7; font-family:Inter,sans-serif;">'
+            f'margin:0.5rem 0 1rem 0; overflow-wrap:break-word; word-break:break-word;">'
+            f'<span style="color:{WHITE}; font-size:clamp(0.8rem, 2.5vw, 0.92rem); line-height:1.7; font-family:Inter,sans-serif;">'
             f'{summary}</span></div>',
             unsafe_allow_html=True,
         )
@@ -783,9 +871,9 @@ st.html(f"""
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&display=swap');
 </style>
 <div style="font-family:'Inter',sans-serif;">
-    <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:0.55em;color:{SILVER_DARK};font-family:'JetBrains Mono',monospace;">
-        <span>Ranked by active aircraft count (on ground + low altitude within 20km)</span>
-        <span style="display:flex;gap:12px;"><span>g = ground</span><span>l = low alt</span><span>d = descending</span><span>c = climbing</span></span>
+    <div style="display:flex;flex-wrap:wrap;justify-content:space-between;margin-bottom:6px;font-size:0.55em;color:{SILVER_DARK};font-family:'JetBrains Mono',monospace;gap:4px;">
+        <span style="overflow-wrap:break-word;">Ranked by active aircraft count (on ground + low altitude within 20km)</span>
+        <span style="display:flex;gap:12px;flex-wrap:wrap;"><span>g = ground</span><span>l = low alt</span><span>d = descending</span><span>c = climbing</span></span>
     </div>
     {leaderboard_html}
 </div>
@@ -869,11 +957,11 @@ with map_col:
             template="plotly_dark",
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
-            height=550,
+            height=480,
             margin=dict(t=10, b=10, l=10, r=10),
             font=dict(family="Inter, sans-serif"),
         )
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
 with ground_col:
     st.markdown(f'<div class="section-header">Ground Congestion</div>', unsafe_allow_html=True)
@@ -911,7 +999,7 @@ with ground_col:
             template="plotly_dark",
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
-            height=550,
+            height=480,
             font=dict(family="JetBrains Mono, monospace", color="white"),
             margin=dict(l=45, r=15, t=10, b=30),
             xaxis=dict(title="% on Ground", range=[0, 100], gridcolor="rgba(255,255,255,0.05)", showticklabels=False),
@@ -1181,7 +1269,7 @@ with st.expander("Data Dictionary"):
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap');
 </style>
-<div style="font-family:'Inter',sans-serif; color:{SILVER}; font-size:0.85em; line-height:1.7;">
+<div style="font-family:'Inter',sans-serif; color:{SILVER}; font-size:clamp(0.75em, 2.5vw, 0.85em); line-height:1.7; overflow-wrap:break-word;">
 
 <div style="color:{WHITE}; font-weight:700; font-size:1em; margin-bottom:8px; border-bottom:1px solid {SILVER_DARK}; padding-bottom:6px;">Metrics</div>
 <table style="width:100%; border-collapse:collapse;">
@@ -1228,7 +1316,7 @@ with st.expander("Data Dictionary"):
 <tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Source</td>
     <td style="padding:4px 0;"><a href="https://opensky-network.org" style="color:{RED_LIGHT};">OpenSky Network</a> - free, crowdsourced ADS-B receiver network. No API key required.</td></tr>
 <tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Coverage</td>
-    <td style="padding:4px 0;">Top 30 US airports by passenger volume. Bounding box: lat 24-50, lon -125 to -66.</td></tr>
+    <td style="padding:4px 0;">Top 50 US airports by passenger volume. Bounding box: lat 24-50, lon -125 to -66.</td></tr>
 <tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Radius</td>
     <td style="padding:4px 0;">20 km (~10.8 nautical miles) from airport coordinates, calculated via haversine formula.</td></tr>
 <tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Low Alt Cutoff</td>
