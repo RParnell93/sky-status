@@ -598,7 +598,7 @@ with g3:
         st.markdown(f'<div style="text-align:center;padding:60px 0;color:{SILVER_DARK};font-size:0.85em;">7-day average<br>needs more snapshots</div>', unsafe_allow_html=True)
 
 # Per-airport health score bars (worst first)
-display_apts = [(apt, sc) for apt, sc in scored["airports"] if apt.get("active", 0) >= 3][:20]
+display_apts = [(apt, sc) for apt, sc in scored["airports"] if apt.get("active", 0) > 0]
 
 if display_apts:
     fig_health = go.Figure(go.Bar(
