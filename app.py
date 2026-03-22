@@ -432,6 +432,247 @@ if HAS_ANTHROPIC:
             unsafe_allow_html=True,
         )
 
+# ---------------------------------------------------------------------------
+# Traffic Health Score (Whoop-style 0-100)
+# ---------------------------------------------------------------------------
+
+def _compute_health_score(airports, total_aircraft):
+    """Compute system-wide traffic health score (0-100, higher = healthier).
+
+    Components (weighted):
+      ground_pressure (40%): on_ground / active - surface congestion
+      arrival_imbalance (30%): |descending - climbing| / (descending + climbing) - flow imbalance
+      saturation (30%): active / total_aircraft - how much traffic is concentrated at airports
+    """
+    tot_active = sum(a["active"] for a in airports)
+    tot_ground = sum(a["on_ground"] for a in airports)
+    tot_desc = sum(a["descending"] for a in airports)
+    tot_climb = sum(a["climbing"] for a in airports)
+
+    if tot_active == 0:
+        return 100.0
+
+    ground_pressure = tot_ground / tot_active
+    flow_total = tot_desc + tot_climb
+    arrival_imbalance = abs(tot_desc - tot_climb) / flow_total if flow_total > 0 else 0
+    saturation = min(tot_active / max(total_aircraft, 1), 1.0)
+
+    raw = ground_pressure * 0.40 + arrival_imbalance * 0.30 + saturation * 0.30
+    return round(max(0, min(100, 100 - raw * 100)), 1)
+
+
+def _compute_airport_health(apt, max_active):
+    """Compute per-airport health score."""
+    if apt["active"] == 0:
+        return 100.0
+    ground_pressure = apt["on_ground"] / apt["active"]
+    flow = apt["descending"] + apt["climbing"]
+    arrival_imbalance = abs(apt["descending"] - apt["climbing"]) / flow if flow > 0 else 0
+    volume_pressure = apt["active"] / max_active if max_active > 0 else 0
+    raw = ground_pressure * 0.40 + arrival_imbalance * 0.30 + volume_pressure * 0.30
+    return round(max(0, min(100, 100 - raw * 100)), 1)
+
+
+def _score_color(score):
+    if score >= 80:
+        return "#22c55e"  # green
+    elif score >= 60:
+        return "#eab308"  # yellow
+    elif score >= 40:
+        return "#f97316"  # orange
+    return RED
+
+
+def _score_label(score):
+    if score >= 80:
+        return "Healthy"
+    elif score >= 60:
+        return "Moderate"
+    elif score >= 40:
+        return "Stressed"
+    return "Congested"
+
+
+def _load_historical_scores():
+    """Load 3-day and 7-day avg health scores from MotherDuck."""
+    token = os.environ.get("MOTHERDUCK_TOKEN", "")
+    if not token:
+        try:
+            token = st.secrets["MOTHERDUCK_TOKEN"]
+        except (KeyError, FileNotFoundError):
+            return None, None, None
+    if not token:
+        return None, None, None
+    try:
+        import duckdb
+        con = duckdb.connect(f"md:data_viz?motherduck_token={token}")
+
+        # Get per-snapshot scores for last 7 days
+        rows = con.execute("""
+            WITH snapshot_stats AS (
+                SELECT
+                    snapshot_time,
+                    total_us_aircraft,
+                    SUM(active) as tot_active,
+                    SUM(on_ground) as tot_ground,
+                    SUM(descending) as tot_desc,
+                    SUM(climbing) as tot_climb
+                FROM airport_congestion
+                WHERE snapshot_time >= NOW() - INTERVAL 7 DAY
+                GROUP BY snapshot_time, total_us_aircraft
+            )
+            SELECT snapshot_time, total_us_aircraft, tot_active, tot_ground, tot_desc, tot_climb
+            FROM snapshot_stats
+            ORDER BY snapshot_time
+        """).fetchall()
+        con.close()
+
+        if not rows:
+            return None, None, None
+
+        from datetime import datetime, timedelta
+        now = datetime.now(timezone.utc)
+        scores_3d = []
+        scores_7d = []
+        per_airport_rows = []
+
+        for r in rows:
+            snap_ts, total_ac, tot_active, tot_ground, tot_desc, tot_climb = r
+            if tot_active == 0:
+                continue
+            gp = tot_ground / tot_active
+            flow = tot_desc + tot_climb
+            ai = abs(tot_desc - tot_climb) / flow if flow > 0 else 0
+            sat = min(tot_active / max(total_ac, 1), 1.0)
+            score = max(0, min(100, 100 - (gp * 0.40 + ai * 0.30 + sat * 0.30) * 100))
+
+            # Check if within 3 days
+            ts = snap_ts if hasattr(snap_ts, 'date') else datetime.fromisoformat(str(snap_ts))
+            if hasattr(ts, 'tzinfo') and ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age = now - ts
+            scores_7d.append(score)
+            if age <= timedelta(days=3):
+                scores_3d.append(score)
+
+        avg_3d = round(sum(scores_3d) / len(scores_3d), 1) if scores_3d else None
+        avg_7d = round(sum(scores_7d) / len(scores_7d), 1) if scores_7d else None
+        n_snapshots = len(scores_7d)
+
+        return avg_3d, avg_7d, n_snapshots
+    except Exception:
+        return None, None, None
+
+
+def _make_gauge(score, title, subtitle=""):
+    """Create a Plotly gauge chart for a health score."""
+    color = _score_color(score)
+    label = _score_label(score)
+
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=score,
+        number=dict(font=dict(size=42, family="JetBrains Mono", color=WHITE), suffix=""),
+        title=dict(text=f"<b>{title}</b><br><span style='font-size:11px;color:{SILVER}'>{subtitle}</span>", font=dict(size=14, color=WHITE, family="Inter")),
+        gauge=dict(
+            axis=dict(range=[0, 100], tickwidth=0, tickcolor="rgba(0,0,0,0)", tickfont=dict(size=0)),
+            bar=dict(color=color, thickness=0.85),
+            bgcolor="rgba(255,255,255,0.04)",
+            borderwidth=0,
+            steps=[
+                dict(range=[0, 40], color="rgba(200,16,46,0.08)"),
+                dict(range=[40, 60], color="rgba(249,115,22,0.06)"),
+                dict(range=[60, 80], color="rgba(234,179,8,0.06)"),
+                dict(range=[80, 100], color="rgba(34,197,94,0.06)"),
+            ],
+            threshold=dict(line=dict(color=WHITE, width=2), thickness=0.85, value=score),
+        ),
+    ))
+    fig.add_annotation(
+        x=0.5, y=0.18, text=label, showarrow=False,
+        font=dict(size=13, color=color, family="Inter", weight=700),
+    )
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=220,
+        margin=dict(t=50, b=10, l=20, r=20),
+        font=dict(family="Inter, sans-serif"),
+    )
+    return fig
+
+
+# Compute current score
+current_score = _compute_health_score(snapshot["airports"], snapshot["total_us_aircraft"])
+
+# Load historical
+avg_3d, avg_7d, n_hist = _load_historical_scores()
+
+st.markdown("---")
+st.markdown(f'<div class="section-header">Traffic Health Score</div>', unsafe_allow_html=True)
+
+g1, g2, g3 = st.columns(3)
+with g1:
+    st.plotly_chart(_make_gauge(current_score, "NOW", "Current snapshot"), use_container_width=True, config={"displayModeBar": False})
+with g2:
+    if avg_3d is not None:
+        st.plotly_chart(_make_gauge(avg_3d, "3-DAY AVG", f"{n_hist} snapshots"), use_container_width=True, config={"displayModeBar": False})
+    else:
+        st.markdown(f'<div style="text-align:center;padding:60px 0;color:{SILVER_DARK};font-size:0.85em;">3-day average<br>needs more snapshots</div>', unsafe_allow_html=True)
+with g3:
+    if avg_7d is not None:
+        st.plotly_chart(_make_gauge(avg_7d, "7-DAY AVG", f"{n_hist} snapshots"), use_container_width=True, config={"displayModeBar": False})
+    else:
+        st.markdown(f'<div style="text-align:center;padding:60px 0;color:{SILVER_DARK};font-size:0.85em;">7-day average<br>needs more snapshots</div>', unsafe_allow_html=True)
+
+# Per-airport health score heatmap
+scored_airports = [a for a in snapshot["airports"] if a["active"] >= 3]
+if scored_airports:
+    max_act_score = max(a["active"] for a in scored_airports)
+    for a in scored_airports:
+        a["_health"] = _compute_airport_health(a, max_act_score)
+
+    scored_airports.sort(key=lambda a: a["_health"])
+    display_apts = scored_airports[:20]
+
+    fig_health = go.Figure(go.Bar(
+        y=[a["iata"] for a in display_apts],
+        x=[a["_health"] for a in display_apts],
+        orientation="h",
+        marker=dict(
+            color=[a["_health"] for a in display_apts],
+            colorscale=[
+                [0, RED], [0.4, "#f97316"], [0.6, "#eab308"], [0.8, "#22c55e"], [1, "#22c55e"]
+            ],
+            cmin=0, cmax=100,
+        ),
+        text=[f'{a["_health"]:.0f} - {_score_label(a["_health"])}' for a in display_apts],
+        textposition="inside",
+        insidetextanchor="end",
+        textfont=dict(color="white", size=10, family="JetBrains Mono"),
+        hovertext=[
+            f"<b>{a['iata']}</b> {a['name']}<br>"
+            f"Score: {a['_health']:.0f} ({_score_label(a['_health'])})<br>"
+            f"Active: {a['active']}, Ground: {a['on_ground']}, "
+            f"Arr: {a['descending']}, Dep: {a['climbing']}"
+            for a in display_apts
+        ],
+        hoverinfo="text",
+    ))
+    fig_health.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=max(300, len(display_apts) * 28 + 60),
+        font=dict(family="JetBrains Mono, monospace", color="white"),
+        margin=dict(l=45, r=15, t=10, b=30),
+        xaxis=dict(title="Health Score", range=[0, 105], gridcolor="rgba(255,255,255,0.05)"),
+        yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+    )
+    st.plotly_chart(fig_health, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+    st.caption("Score = 100 - (ground_pressure x 0.40 + flow_imbalance x 0.30 + volume_pressure x 0.30) x 100. Lower scores indicate more congestion.")
+
 # Map + Ground Congestion side by side
 st.markdown("---")
 map_col, ground_col = st.columns([3, 2])
@@ -840,6 +1081,26 @@ with st.expander("Data Dictionary"):
     <td style="padding:4px 0;">All aircraft within 20 km regardless of altitude. Includes high-altitude overflights.</td></tr>
 <tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Ground %</td>
     <td style="padding:4px 0;">On Ground / Active. Higher values suggest surface congestion (taxi delays, gate holds).</td></tr>
+</table>
+
+<div style="color:{WHITE}; font-weight:700; font-size:1em; margin:16px 0 8px 0; border-bottom:1px solid {SILVER_DARK}; padding-bottom:6px;">Traffic Health Score</div>
+<table style="width:100%; border-collapse:collapse;">
+<tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Formula</td>
+    <td style="padding:4px 0;">100 - (ground_pressure x 0.40 + flow_imbalance x 0.30 + volume_pressure x 0.30) x 100</td></tr>
+<tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Ground Pressure</td>
+    <td style="padding:4px 0;">on_ground / active. Surface congestion ratio. Weight: 40%.</td></tr>
+<tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Flow Imbalance</td>
+    <td style="padding:4px 0;">|descending - climbing| / (descending + climbing). Measures arrival/departure asymmetry. Weight: 30%.</td></tr>
+<tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Volume Pressure</td>
+    <td style="padding:4px 0;">System: active / total_aircraft. Per-airport: active / max_active. Weight: 30%.</td></tr>
+<tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">80-100</td>
+    <td style="padding:4px 0;"><span style="color:#22c55e;font-weight:600;">Healthy</span> - light traffic, balanced flows</td></tr>
+<tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">60-79</td>
+    <td style="padding:4px 0;"><span style="color:#eab308;font-weight:600;">Moderate</span> - normal busy periods</td></tr>
+<tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">40-59</td>
+    <td style="padding:4px 0;"><span style="color:#f97316;font-weight:600;">Stressed</span> - high ground congestion or flow imbalance</td></tr>
+<tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">0-39</td>
+    <td style="padding:4px 0;"><span style="color:{RED};font-weight:600;">Congested</span> - significant delays likely</td></tr>
 </table>
 
 <div style="color:{WHITE}; font-weight:700; font-size:1em; margin:16px 0 8px 0; border-bottom:1px solid {SILVER_DARK}; padding-bottom:6px;">Methodology</div>
