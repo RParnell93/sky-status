@@ -900,7 +900,7 @@ def _delta_html(val, net_val, suffix="", is_pct=False):
         color = "#ef4444" if diff > 5 else "#22c55e" if diff < -5 else SILVER_DARK
         return f'<span style="font-size:0.55em;color:{color};margin-left:4px;">{sign}{diff:.0f}pp</span>'
     sign = "+" if diff > 0 else ""
-    color = SILVER_DARK
+    color = "#ef4444" if diff > 0.5 else "#22c55e" if diff < -0.5 else SILVER_DARK
     return f'<span style="font-size:0.55em;color:{color};margin-left:4px;">{sign}{diff:.1f}{suffix}</span>'
 
 
@@ -938,31 +938,46 @@ def _show_airport_card(iata):
         unsafe_allow_html=True,
     )
 
-    # Row 1: Health scores (Now, 1h, 3h, Today)
+    # Row 1: Health score donuts (Now, 1h, 3h, Today)
     _score_items = [
         ("NOW", score),
         ("1-HR", hist.get("avg_1h")),
         ("3-HR", hist.get("avg_3h")),
         ("TODAY", hist.get("avg_today")),
     ]
-    _score_html = '<div style="display:flex;gap:8px;margin:8px 0;">'
-    for _slabel, _sval in _score_items:
-        if _sval is not None:
-            _sc = _bar_color(_sval)
-            _score_html += (
-                f'<div style="flex:1;padding:10px 6px;background:rgba(255,255,255,0.03);border-radius:8px;text-align:center;">'
-                f'<div style="font-family:JetBrains Mono,monospace;font-size:1.4em;font-weight:800;color:{_sc};">{_sval:.0f}</div>'
-                f'<div style="font-size:0.55em;color:{SILVER};text-transform:uppercase;letter-spacing:1px;margin-top:2px;">{_slabel}</div>'
-                f'{_score_bar_html(_sval)}</div>'
-            )
-        else:
-            _score_html += (
-                f'<div style="flex:1;padding:10px 6px;background:rgba(255,255,255,0.03);border-radius:8px;text-align:center;">'
-                f'<div style="font-family:JetBrains Mono,monospace;font-size:1.4em;font-weight:800;color:{SILVER_DARK};">--</div>'
-                f'<div style="font-size:0.55em;color:{SILVER};text-transform:uppercase;letter-spacing:1px;margin-top:2px;">{_slabel}</div></div>'
-            )
-    _score_html += '</div>'
-    st.markdown(_score_html, unsafe_allow_html=True)
+    _gcols = st.columns(4)
+    for _gc, (_slabel, _sval) in zip(_gcols, _score_items):
+        with _gc:
+            if _sval is not None:
+                _sc = _bar_color(_sval)
+                _fig_mini = go.Figure(go.Pie(
+                    values=[_sval, 100 - _sval],
+                    hole=0.7,
+                    marker=dict(colors=[_sc, "rgba(255,255,255,0.04)"]),
+                    textinfo="none", hoverinfo="none",
+                    sort=False, direction="clockwise",
+                ))
+                _fig_mini.add_annotation(
+                    text=f"<b>{_sval:.0f}</b>", x=0.5, y=0.55, font_size=22,
+                    font=dict(color=_sc, family="JetBrains Mono"), showarrow=False,
+                )
+                _fig_mini.add_annotation(
+                    text=_slabel, x=0.5, y=0.35, font_size=9,
+                    font=dict(color=SILVER, family="Inter"), showarrow=False,
+                )
+                _fig_mini.update_layout(
+                    template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)", height=140,
+                    margin=dict(t=5, b=5, l=5, r=5), showlegend=False,
+                )
+                st.plotly_chart(_fig_mini, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+            else:
+                st.markdown(
+                    f'<div style="text-align:center;padding:30px 0;">'
+                    f'<div style="font-family:JetBrains Mono,monospace;font-size:1.2em;color:{SILVER_DARK};">--</div>'
+                    f'<div style="font-size:0.55em;color:{SILVER};">{_slabel}</div></div>',
+                    unsafe_allow_html=True,
+                )
 
     # Row 2: Unified metrics box with deltas
     _gd = _delta_html(gpct, net_ground_pct, is_pct=True)
@@ -981,11 +996,11 @@ def _show_airport_card(iata):
         f'<div style="font-size:0.55em;color:{SILVER};text-transform:uppercase;letter-spacing:0.5px;">Airborne</div>'
         f'<div style="font-size:0.5em;color:{SILVER_DARK};">{apt["low_altitude"]} below 10k ft</div></div>'
         f'<div style="flex:1;padding:6px;border-right:1px solid rgba(255,255,255,0.06);">'
-        f'<div style="font-family:JetBrains Mono,monospace;font-size:1.2em;font-weight:800;color:{RED};">{apt["descending"]}{_dd}</div>'
+        f'<div style="font-family:JetBrains Mono,monospace;font-size:1.2em;font-weight:800;color:{WHITE};">{apt["descending"]}{_dd}</div>'
         f'<div style="font-size:0.55em;color:{SILVER};text-transform:uppercase;letter-spacing:0.5px;">Arriving</div>'
         f'<div style="font-size:0.5em;color:{SILVER_DARK};">net avg: {net_desc:.0f}</div></div>'
         f'<div style="flex:1;padding:6px;">'
-        f'<div style="font-family:JetBrains Mono,monospace;font-size:1.2em;font-weight:800;color:#2E8B57;">{apt["climbing"]}{_cd}</div>'
+        f'<div style="font-family:JetBrains Mono,monospace;font-size:1.2em;font-weight:800;color:{WHITE};">{apt["climbing"]}{_cd}</div>'
         f'<div style="font-size:0.55em;color:{SILVER};text-transform:uppercase;letter-spacing:0.5px;">Departing</div>'
         f'<div style="font-size:0.5em;color:{SILVER_DARK};">net avg: {net_climb:.0f}</div></div>'
         f'</div></div>',
