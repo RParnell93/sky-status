@@ -14,6 +14,25 @@ from fetch import get_congestion_snapshot
 
 st.set_page_config(page_title="Sky Status", page_icon="favicon.svg", layout="wide")
 
+# Detect browser timezone via JS, default to US Eastern
+import streamlit.components.v1 as _components
+
+if "tz" not in st.query_params:
+    _components.html("""<script>
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const url = new URL(window.parent.location);
+    url.searchParams.set('tz', tz);
+    window.parent.location.replace(url.toString());
+    </script>""", height=0)
+    st.stop()
+
+_tz_name = st.query_params.get("tz", "America/New_York")
+try:
+    USER_TZ = ZoneInfo(_tz_name)
+except Exception:
+    USER_TZ = ZoneInfo("America/New_York")
+_tz_abbr = datetime.now(timezone.utc).astimezone(USER_TZ).strftime("%Z")
+
 # Delta-inspired palette
 # Navy: #003366 / #00234B  Red: #C8102E  White  Silver: #8B9DAF  Light gray: #E8ECF0
 NAVY = "#00234B"
@@ -348,9 +367,8 @@ with st.spinner("Loading airport data..."):
     snapshot = load_snapshot()
 
 ts = datetime.fromisoformat(snapshot["timestamp"])
-ET = ZoneInfo("America/New_York")
-ts_et = ts.astimezone(ET)
-local_ts = ts_et.strftime("%b %d, %Y %I:%M %p ET")
+ts_local = ts.astimezone(USER_TZ)
+local_ts = ts_local.strftime(f"%b %d, %Y %I:%M %p {_tz_abbr}")
 
 # Top metrics
 active_airports = sum(1 for a in snapshot["airports"] if a["active"] > 0)
@@ -477,21 +495,21 @@ NOTABLE PATTERNS:
 FAA ADVISORIES (live):
 {faa_block}
 
-Write a 3-4 sentence briefing about the CURRENT DATA above. All times should be in Eastern Time. Match the examples' tone and data density. If FAA advisories are active, weave them into the analysis naturally (don't just list them).
+Write a 3-4 sentence briefing about the CURRENT DATA above. All times should be in {_tz_abbr}. Match the examples' tone and data density. If FAA advisories are active, weave them into the analysis naturally (don't just list them).
 
 EXAMPLE OUTPUTS (match this tone and structure):
 "ORD leads ground congestion at 71%, with 89 active aircraft on tarmac, pointing to taxi delays. ATL and DFW are arrival-heavy at 2:1 ratios. The system has 4,800 aircraft with a 48% ground rate, well above the typical mid-afternoon 35%."
 "DEN is pushing departures hard with 45 climbing vs. 18 descending, likely a post-bank push from United's hub. LAX and SFO show the opposite pattern. Ground rates are moderate at 38% system-wide across 5,100 tracked aircraft.\""""
 
 
-_AI_SYSTEM_PROMPT = """You are a concise aviation analyst writing snapshot briefings of US airspace.
+_AI_SYSTEM_PROMPT = f"""You are a concise aviation analyst writing snapshot briefings of US airspace.
 Your audience is informed general readers, like a flight tracker blog or aviation Twitter account.
 Rules:
 - Exactly 3-4 sentences. No more.
 - Lead with the most interesting finding, not a generic overview.
 - Use specific numbers (airport codes, counts, percentages).
 - If FAA advisories are active, reference them with context.
-- All times in Eastern Time (ET).
+- All times in {_tz_abbr}.
 - Present tense. No hedging. No em dashes. No filler.
 - Sound like a sharp analyst, not a press release."""
 
@@ -1472,16 +1490,20 @@ if heatmap_data:
     st.markdown(f'<div class="section-header">Congestion by Time of Day</div>', unsafe_allow_html=True)
 
     iatas = sorted(set(r[0] for r in heatmap_data))
-    hours = sorted(set(int(r[1]) for r in heatmap_data))
-    lookup = {(r[0], int(r[1])): r[2] for r in heatmap_data}
-    z = [[lookup.get((iata, h), 0) for h in hours] for iata in iatas]
+    # Convert UTC hours to user's local timezone
+    _utc_offset_h = int(datetime.now(timezone.utc).astimezone(USER_TZ).utcoffset().total_seconds() / 3600)
+    utc_hours = sorted(set(int(r[1]) for r in heatmap_data))
+    local_hours = sorted(set((h + _utc_offset_h) % 24 for h in utc_hours))
+    # Build lookup with local hours
+    lookup = {(r[0], (int(r[1]) + _utc_offset_h) % 24): r[2] for r in heatmap_data}
+    z = [[lookup.get((iata, h), 0) for h in local_hours] for iata in iatas]
 
     fig_heat = go.Figure(go.Heatmap(
         z=z,
-        x=[f"{h}:00" for h in hours],
+        x=[f"{h}:00" for h in local_hours],
         y=iatas,
         colorscale=[[0, NAVY_MID], [0.3, NAVY_LIGHT], [0.6, SILVER], [0.8, RED_LIGHT], [1, RED]],
-        hovertemplate="<b>%{y}</b> at %{x} UTC<br>Avg active: %{z:.1f}<extra></extra>",
+        hovertemplate=f"<b>%{{y}}</b> at %{{x}} {_tz_abbr}<br>Avg active: %{{z:.1f}}<extra></extra>",
         colorbar=dict(title=dict(text="Avg Active", font=dict(color=SILVER, size=10)), tickfont=dict(color=SILVER, size=9)),
     ))
     fig_heat.update_layout(
@@ -1491,7 +1513,7 @@ if heatmap_data:
         height=max(300, len(iatas) * 28 + 80),
         font=dict(family="JetBrains Mono, monospace", color="white"),
         margin=dict(l=50, r=20, t=20, b=40),
-        xaxis=dict(title="Hour (UTC)", dtick=1),
+        xaxis=dict(title=f"Hour ({_tz_abbr})", dtick=1),
     )
     st.plotly_chart(fig_heat, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
     st.caption("Heatmap builds over time as more snapshots are collected every hour.")
@@ -1572,7 +1594,7 @@ with st.expander("Data Dictionary"):
 <tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Low Alt Cutoff</td>
     <td style="padding:4px 0;">10,000 ft (3,048 m) barometric altitude. Standard transition altitude for approach/departure procedures.</td></tr>
 <tr><td style="padding:4px 12px 4px 0; color:{WHITE}; font-family:'JetBrains Mono',monospace; font-weight:600; white-space:nowrap;">Refresh</td>
-    <td style="padding:4px 0;">Snapshots taken every hour (6 AM - 11 PM ET) and cached in MotherDuck. App cache TTL: 2 minutes.</td></tr>
+    <td style="padding:4px 0;">Snapshots taken every 15 min (6 AM - 11 PM ET) and cached in MotherDuck. App cache TTL: 2 minutes.</td></tr>
 </table>
 
 <div style="color:{WHITE}; font-weight:700; font-size:1em; margin:16px 0 8px 0; border-bottom:1px solid {SILVER_DARK}; padding-bottom:6px;">Leaderboard Key</div>
