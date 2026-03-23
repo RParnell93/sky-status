@@ -1518,7 +1518,7 @@ if heatmap_data:
         xaxis=dict(title=f"Hour ({_tz_abbr})", dtick=1),
     )
     st.plotly_chart(fig_heat, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
-    st.caption("Heatmap builds over time as more snapshots are collected every hour.")
+    st.caption("Heatmap builds over time as more snapshots are collected.")
 
 # Data table
 st.markdown("---")
