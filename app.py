@@ -14,23 +14,8 @@ from fetch import get_congestion_snapshot
 
 st.set_page_config(page_title="Sky Status", page_icon="favicon.svg", layout="wide")
 
-# Detect browser timezone via JS, default to US Eastern
-import streamlit.components.v1 as _components
-
-if "tz" not in st.query_params:
-    _components.html("""<script>
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const url = new URL(window.parent.location);
-    url.searchParams.set('tz', tz);
-    window.parent.location.replace(url.toString());
-    </script>""", height=0)
-    st.stop()
-
-_tz_name = st.query_params.get("tz", "America/New_York")
-try:
-    USER_TZ = ZoneInfo(_tz_name)
-except Exception:
-    USER_TZ = ZoneInfo("America/New_York")
+# Default to US Eastern Time
+USER_TZ = ZoneInfo("America/New_York")
 _tz_abbr = datetime.now(timezone.utc).astimezone(USER_TZ).strftime("%Z")
 
 # Delta-inspired palette
