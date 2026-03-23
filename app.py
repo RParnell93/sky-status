@@ -2,6 +2,7 @@ import os
 import streamlit as st
 import plotly.graph_objects as go
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 try:
     import anthropic
@@ -347,7 +348,9 @@ with st.spinner("Loading airport data..."):
     snapshot = load_snapshot()
 
 ts = datetime.fromisoformat(snapshot["timestamp"])
-local_ts = ts.strftime("%b %d, %Y %I:%M %p UTC")
+ET = ZoneInfo("America/New_York")
+ts_et = ts.astimezone(ET)
+local_ts = ts_et.strftime("%b %d, %Y %I:%M %p ET")
 
 # Top metrics
 active_airports = sum(1 for a in snapshot["airports"] if a["active"] > 0)
@@ -715,6 +718,39 @@ if trend_data and len(trend_data) >= 3:
 # AI Summary
 # ---------------------------------------------------------------------------
 
+@st.cache_data(ttl=300)
+def _fetch_faa_status():
+    """Fetch FAA airport status advisories (ground delays, ground stops, etc.)."""
+    import requests
+    try:
+        r = requests.get("https://nasstatus.faa.gov/api/airport-status-information", timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        advisories = []
+        for item in data:
+            arpt = item.get("arpt", "")
+            for delay in item.get("ground_delay", {}).get("ground_delay_info", []):
+                reason = delay.get("reason", "")
+                avg = delay.get("avg", "")
+                advisories.append(f"{arpt}: Ground Delay Program - {reason}, avg delay {avg}")
+            for stop in item.get("ground_stop", {}).get("ground_stop_info", []):
+                reason = stop.get("reason", "")
+                end = stop.get("endTime", "")
+                advisories.append(f"{arpt}: Ground Stop - {reason}, until {end}")
+            for dep in item.get("depart_delay", {}).get("depart_delay_info", []):
+                reason = dep.get("reason", "")
+                advisories.append(f"{arpt}: Departure Delay - {reason}")
+            for arr in item.get("arrive_delay", {}).get("arrive_delay_info", []):
+                reason = arr.get("reason", "")
+                advisories.append(f"{arpt}: Arrival Delay - {reason}")
+            for closure in item.get("closure", {}).get("closure_info", []):
+                reason = closure.get("reason", "")
+                advisories.append(f"{arpt}: Closure - {reason}")
+        return advisories
+    except Exception:
+        return []
+
+
 def _build_sky_prompt(snapshot, ts_str):
     """Build a structured prompt with all current data for the AI summary."""
     top10 = snapshot["airports"][:10]
@@ -746,6 +782,10 @@ def _build_sky_prompt(snapshot, ts_str):
 
     pattern_block = "\n".join(f"  - {p}" for p in patterns) if patterns else "  None detected"
 
+    # FAA advisories
+    faa = _fetch_faa_status()
+    faa_block = "\n".join(f"  - {a}" for a in faa) if faa else "  No active FAA advisories"
+
     return f"""CURRENT DATA ({ts_str}):
   Total aircraft over US: {total_ac:,}
   Total active near airports: {total_active}
@@ -759,6 +799,9 @@ TOP 10 AIRPORTS:
 NOTABLE PATTERNS:
 {pattern_block}
 
+FAA ADVISORIES (live):
+{faa_block}
+
 EXAMPLE OUTPUTS (match this tone and structure):
 
 Example 1 (high ground congestion):
@@ -770,7 +813,7 @@ Example 2 (balanced, quiet system):
 Example 3 (departure surge):
 "DEN is pushing departures hard with 45 climbing vs. 18 descending, likely a post-bank push from United's hub operation. LAX and SFO show the opposite pattern, each pulling in 30+ arrivals with fewer than 15 departures, consistent with West Coast evening arrival waves. Ground rates are moderate at 38% system-wide across 5,100 tracked aircraft."
 
-Write a 3-4 sentence briefing about the CURRENT DATA above. Match the examples' tone and data density."""
+Write a 3-4 sentence briefing about the CURRENT DATA above. All times should be in Eastern Time. Match the examples' tone and data density. If FAA advisories are active, weave them into the analysis naturally (don't just list them)."""
 
 
 _AI_SYSTEM_PROMPT = """You are a concise aviation analyst writing snapshot briefings of US airspace.
@@ -782,6 +825,8 @@ Rules:
 - Compare airports to each other when relevant.
 - If ground rates are high, note traveler impact (delays, taxi queues).
 - If arrival/departure imbalance exists, note it.
+- If FAA advisories are active, reference them with context (ground stops, delay programs, weather causes).
+- All times in Eastern Time (ET). Convert UTC timestamps if needed.
 - Present tense. No hedging. State what the data shows.
 - No em dashes. No inflated language. No filler phrases.
 - Sound like a sharp analyst, not a press release."""

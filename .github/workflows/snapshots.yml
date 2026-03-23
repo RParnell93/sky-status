@@ -2,8 +2,8 @@ name: Data Snapshots
 
 on:
   schedule:
-    # Airport congestion: every hour during US daytime (11:00-04:00 UTC = 6am-11pm ET)
-    - cron: '0 11-23,0-4 * * *'
+    # Airport congestion: every 15 min during US daytime (11:00-04:00 UTC = 6am-11pm ET)
+    - cron: '*/15 11-23,0-4 * * *'
     # Daily data refresh (earthquakes, wildfires, AQ, FEC): 7am ET = 11:00 UTC
     - cron: '0 11 * * *'
   workflow_dispatch:
