@@ -720,32 +720,41 @@ if trend_data and len(trend_data) >= 3:
 
 @st.cache_data(ttl=300)
 def _fetch_faa_status():
-    """Fetch FAA airport status advisories (ground delays, ground stops, etc.)."""
+    """Fetch FAA airport status advisories (ground delays, ground stops, etc.).
+
+    The FAA NASSTATUS API returns XML with ground delay programs, ground stops,
+    arrival/departure delays, and airport closures.
+    """
     import requests
+    import xml.etree.ElementTree as ET
     try:
         r = requests.get("https://nasstatus.faa.gov/api/airport-status-information", timeout=10)
         r.raise_for_status()
-        data = r.json()
+        root = ET.fromstring(r.text)
         advisories = []
-        for item in data:
-            arpt = item.get("arpt", "")
-            for delay in item.get("ground_delay", {}).get("ground_delay_info", []):
-                reason = delay.get("reason", "")
-                avg = delay.get("avg", "")
-                advisories.append(f"{arpt}: Ground Delay Program - {reason}, avg delay {avg}")
-            for stop in item.get("ground_stop", {}).get("ground_stop_info", []):
-                reason = stop.get("reason", "")
-                end = stop.get("endTime", "")
+        for delay_type in root.findall("Delay_type"):
+            for gd in delay_type.findall(".//Ground_Delay"):
+                arpt = gd.findtext("ARPT", "")
+                reason = gd.findtext("Reason", "")
+                avg = gd.findtext("Avg", "")
+                mx = gd.findtext("Max", "")
+                advisories.append(f"{arpt}: Ground Delay Program - {reason}, avg {avg}, max {mx}")
+            for gs in delay_type.findall(".//Ground_Stop"):
+                arpt = gs.findtext("ARPT", "")
+                reason = gs.findtext("Reason", "")
+                end = gs.findtext("End_Time", "")
                 advisories.append(f"{arpt}: Ground Stop - {reason}, until {end}")
-            for dep in item.get("depart_delay", {}).get("depart_delay_info", []):
-                reason = dep.get("reason", "")
-                advisories.append(f"{arpt}: Departure Delay - {reason}")
-            for arr in item.get("arrive_delay", {}).get("arrive_delay_info", []):
-                reason = arr.get("reason", "")
-                advisories.append(f"{arpt}: Arrival Delay - {reason}")
-            for closure in item.get("closure", {}).get("closure_info", []):
-                reason = closure.get("reason", "")
-                advisories.append(f"{arpt}: Closure - {reason}")
+            for ad in delay_type.findall(".//Arrive_Depart_Delay"):
+                arpt = ad.findtext("ARPT", "")
+                reason = ad.findtext("Reason", "")
+                mn = ad.findtext("Min", "")
+                mx = ad.findtext("Max", "")
+                trend = ad.findtext("Trend", "")
+                advisories.append(f"{arpt}: Arrival/Departure Delay - {reason}, {mn}-{mx}, trend {trend}")
+            for cl in delay_type.findall(".//Closure"):
+                arpt = cl.findtext("ARPT", "")
+                reason = cl.findtext("Reason", "")
+                advisories.append(f"{arpt}: CLOSED - {reason}")
         return advisories
     except Exception:
         return []
@@ -866,6 +875,26 @@ if HAS_ANTHROPIC:
             f'{summary}</span></div>',
             unsafe_allow_html=True,
         )
+
+# FAA Advisories banner
+_faa_advisories = _fetch_faa_status()
+if _faa_advisories:
+    _faa_items = "".join(
+        f'<div style="padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.06);">'
+        f'<span style="color:#ef4444;font-weight:700;font-family:JetBrains Mono,monospace;font-size:0.8em;">'
+        f'{a.split(":")[0]}</span>'
+        f'<span style="color:{SILVER};font-size:0.85em;margin-left:8px;">{":".join(a.split(":")[1:])}</span></div>'
+        for a in _faa_advisories
+    )
+    st.markdown(
+        f'<div style="background:linear-gradient(135deg, {NAVY_MID} 0%, {NAVY} 100%);'
+        f'padding:0.75rem 1.25rem;border-radius:8px;border-left:3px solid #ef4444;'
+        f'margin:0.5rem 0 1rem 0;">'
+        f'<div style="font-size:0.7em;text-transform:uppercase;letter-spacing:1px;color:#ef4444;'
+        f'font-weight:700;margin-bottom:6px;font-family:Inter,sans-serif;">'
+        f'FAA Advisories</div>{_faa_items}</div>',
+        unsafe_allow_html=True,
+    )
 
 # Airport detail via query params (?airport=ATL)
 filtered_airports = snapshot["airports"]
