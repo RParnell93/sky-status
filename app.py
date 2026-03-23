@@ -626,8 +626,8 @@ if display_apts:
         avg3 = hist.get("avg_3d")
         status_color = _score_color(now_score)
         health_rows += f'''<tr>
-            <td style="{_td_style}font-weight:700;">{apt["iata"]}</td>
-            <td style="{_td_style}color:{SILVER};font-family:Inter,sans-serif;">{apt.get("name","")}</td>
+            <td style="{_td_style}font-weight:700;"><a href="?airport={apt["iata"]}" style="color:{WHITE};text-decoration:none;border-bottom:1px dotted {SILVER_DARK};">{apt["iata"]}</a></td>
+            <td style="{_td_style}color:{SILVER};font-family:Inter,sans-serif;"><a href="?airport={apt["iata"]}" style="color:{SILVER};text-decoration:none;">{apt.get("name","")}</a></td>
             <td style="{_td_style}color:{status_color};font-weight:600;font-size:0.75em;">{sc["label"]}</td>
             <td style="{_td_style}min-width:120px;">{_score_bar_html(now_score)}</td>
             <td style="{_td_style}min-width:120px;">{_score_bar_html(avg_today_apt)}</td>
