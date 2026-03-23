@@ -385,6 +385,172 @@ _src = snapshot.get("source", "OpenSky")
 st.caption(f"Updated: {local_ts}  |  Source: {_src}  |  Refreshes every 2 min")
 
 
+# ---------------------------------------------------------------------------
+# AI Summary + FAA Advisories (functions + display)
+# ---------------------------------------------------------------------------
+
+@st.cache_data(ttl=300)
+def _fetch_faa_status():
+    """Fetch FAA airport status advisories from NASSTATUS XML API."""
+    import requests
+    import xml.etree.ElementTree as ET
+    try:
+        r = requests.get("https://nasstatus.faa.gov/api/airport-status-information", timeout=10)
+        r.raise_for_status()
+        root = ET.fromstring(r.text)
+        advisories = []
+        for delay_type in root.findall("Delay_type"):
+            for gd in delay_type.findall(".//Ground_Delay"):
+                arpt = gd.findtext("ARPT", "")
+                reason = gd.findtext("Reason", "")
+                avg = gd.findtext("Avg", "")
+                mx = gd.findtext("Max", "")
+                advisories.append(f"{arpt}: Ground Delay Program - {reason}, avg {avg}, max {mx}")
+            for gs in delay_type.findall(".//Ground_Stop"):
+                arpt = gs.findtext("ARPT", "")
+                reason = gs.findtext("Reason", "")
+                end = gs.findtext("End_Time", "")
+                advisories.append(f"{arpt}: Ground Stop - {reason}, until {end}")
+            for ad in delay_type.findall(".//Arrive_Depart_Delay"):
+                arpt = ad.findtext("ARPT", "")
+                reason = ad.findtext("Reason", "")
+                mn = ad.findtext("Min", "")
+                mx = ad.findtext("Max", "")
+                trend = ad.findtext("Trend", "")
+                advisories.append(f"{arpt}: Arrival/Departure Delay - {reason}, {mn}-{mx}, trend {trend}")
+            for cl in delay_type.findall(".//Closure"):
+                arpt = cl.findtext("ARPT", "")
+                reason = cl.findtext("Reason", "")
+                advisories.append(f"{arpt}: CLOSED - {reason}")
+        return advisories
+    except Exception:
+        return []
+
+
+def _build_sky_prompt(snapshot_data, ts_str):
+    """Build a structured prompt with all current data for the AI summary."""
+    top10 = snapshot_data["airports"][:10]
+    total_ac = snapshot_data["total_us_aircraft"]
+    _total_active = sum(a["active"] for a in snapshot_data["airports"])
+    _total_ground = sum(a["on_ground"] for a in snapshot_data["airports"])
+    _total_desc = sum(a["descending"] for a in snapshot_data["airports"])
+    _total_climb = sum(a["climbing"] for a in snapshot_data["airports"])
+    _ground_pct = round(_total_ground / _total_active * 100) if _total_active else 0
+
+    airport_lines = "\n".join(
+        f"  {a['iata']} ({a['name']}): {a['active']} active, "
+        f"{a['on_ground']} ground ({round(a['on_ground']/a['active']*100) if a['active'] else 0}%), "
+        f"{a['descending']} arriving, {a['climbing']} departing"
+        for a in top10
+    )
+
+    high_ground = [a for a in top10 if a["active"] > 0 and a["on_ground"] / a["active"] > 0.7]
+    arrival_heavy = [a for a in top10 if a["descending"] > a["climbing"] * 2 and a["descending"] >= 5]
+    departure_heavy = [a for a in top10 if a["climbing"] > a["descending"] * 2 and a["climbing"] >= 5]
+
+    _patterns = []
+    if high_ground:
+        _patterns.append(f"High ground congestion (>70%): {', '.join(a['iata'] for a in high_ground)}")
+    if arrival_heavy:
+        _patterns.append(f"Arrival-heavy airports: {', '.join(a['iata'] for a in arrival_heavy)}")
+    if departure_heavy:
+        _patterns.append(f"Departure-heavy airports: {', '.join(a['iata'] for a in departure_heavy)}")
+
+    pattern_block = "\n".join(f"  - {p}" for p in _patterns) if _patterns else "  None detected"
+
+    faa = _fetch_faa_status()
+    faa_block = "\n".join(f"  - {a}" for a in faa) if faa else "  No active FAA advisories"
+
+    return f"""CURRENT DATA ({ts_str}):
+  Total aircraft over US: {total_ac:,}
+  Total active near airports: {_total_active}
+  Overall ground rate: {_ground_pct}% ({_total_ground} ground / {_total_active} active)
+  Total arriving (descending): {_total_desc}
+  Total departing (climbing): {_total_climb}
+
+TOP 10 AIRPORTS:
+{airport_lines}
+
+NOTABLE PATTERNS:
+{pattern_block}
+
+FAA ADVISORIES (live):
+{faa_block}
+
+Write a 3-4 sentence briefing about the CURRENT DATA above. All times should be in Eastern Time. Match the examples' tone and data density. If FAA advisories are active, weave them into the analysis naturally (don't just list them).
+
+EXAMPLE OUTPUTS (match this tone and structure):
+"ORD leads ground congestion at 71%, with 89 active aircraft on tarmac, pointing to taxi delays. ATL and DFW are arrival-heavy at 2:1 ratios. The system has 4,800 aircraft with a 48% ground rate, well above the typical mid-afternoon 35%."
+"DEN is pushing departures hard with 45 climbing vs. 18 descending, likely a post-bank push from United's hub. LAX and SFO show the opposite pattern. Ground rates are moderate at 38% system-wide across 5,100 tracked aircraft.\""""
+
+
+_AI_SYSTEM_PROMPT = """You are a concise aviation analyst writing snapshot briefings of US airspace.
+Your audience is informed general readers, like a flight tracker blog or aviation Twitter account.
+Rules:
+- Exactly 3-4 sentences. No more.
+- Lead with the most interesting finding, not a generic overview.
+- Use specific numbers (airport codes, counts, percentages).
+- If FAA advisories are active, reference them with context.
+- All times in Eastern Time (ET).
+- Present tense. No hedging. No em dashes. No filler.
+- Sound like a sharp analyst, not a press release."""
+
+
+@st.cache_data(ttl=300)
+def _get_ai_summary(prompt):
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        try:
+            api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+        except Exception:
+            api_key = ""
+    if not api_key:
+        return None
+    client = anthropic.Anthropic(api_key=api_key)
+    msg = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=250,
+        temperature=0.3,
+        system=_AI_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return msg.content[0].text
+
+
+# Display AI briefing + FAA advisories at top
+if HAS_ANTHROPIC:
+    _ai_prompt = _build_sky_prompt(snapshot, local_ts)
+    _ai_summary = _get_ai_summary(_ai_prompt)
+    if _ai_summary:
+        st.markdown(
+            f'<div style="background:linear-gradient(135deg, {NAVY_MID} 0%, {NAVY} 100%); '
+            f'padding:1rem 1.5rem; border-radius:8px; border-left:3px solid {RED}; '
+            f'margin:0.5rem 0 0.5rem 0; overflow-wrap:break-word; word-break:break-word;">'
+            f'<span style="color:{WHITE}; font-size:clamp(0.8rem, 2.5vw, 0.92rem); line-height:1.7; font-family:Inter,sans-serif;">'
+            f'{_ai_summary}</span></div>',
+            unsafe_allow_html=True,
+        )
+
+_faa_advisories = _fetch_faa_status()
+if _faa_advisories:
+    _faa_items = "".join(
+        f'<div style="padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.06);">'
+        f'<span style="color:#ef4444;font-weight:700;font-family:JetBrains Mono,monospace;font-size:0.8em;">'
+        f'{a.split(":")[0]}</span>'
+        f'<span style="color:{SILVER};font-size:0.85em;margin-left:8px;">{":".join(a.split(":")[1:])}</span></div>'
+        for a in _faa_advisories
+    )
+    st.markdown(
+        f'<div style="background:linear-gradient(135deg, {NAVY_MID} 0%, {NAVY} 100%);'
+        f'padding:0.75rem 1.25rem;border-radius:8px;border-left:3px solid #ef4444;'
+        f'margin:0.25rem 0 1rem 0;">'
+        f'<div style="font-size:0.7em;text-transform:uppercase;letter-spacing:1px;color:#ef4444;'
+        f'font-weight:700;margin-bottom:6px;font-family:Inter,sans-serif;">'
+        f'FAA Advisories</div>{_faa_items}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def _score_color(score):
     if score >= THRESHOLD_GREEN:
         return SCORE_COLORS["green"]
@@ -714,341 +880,133 @@ if trend_data and len(trend_data) >= 3:
     st.markdown(f'<div style="margin-top:8px;"><span class="section-header" style="font-size:0.85em;">Health Score Over Time</span></div>', unsafe_allow_html=True)
     st.plotly_chart(fig_trend, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
-# ---------------------------------------------------------------------------
-# AI Summary
-# ---------------------------------------------------------------------------
+# Airport detail dialog (baseball card popup)
+filtered_airports = snapshot["airports"]
 
-@st.cache_data(ttl=300)
-def _fetch_faa_status():
-    """Fetch FAA airport status advisories (ground delays, ground stops, etc.).
+@st.dialog("Airport Detail", width="large")
+def _show_airport_card(iata):
+    apt = next((a for a in snapshot["airports"] if a["iata"] == iata), None)
+    if not apt:
+        st.error(f"Airport {iata} not found")
+        return
+    sc = next((s for a, s in scored["airports"] if a.get("iata") == iata), None)
+    hist = airport_hist.get(apt.get("icao", ""), {})
+    score = sc["score"] if sc else 0
+    color = _score_color(score)
+    label = _score_label(score)
+    gpct = round(apt["on_ground"] / apt["active"] * 100) if apt["active"] else 0
 
-    The FAA NASSTATUS API returns XML with ground delay programs, ground stops,
-    arrival/departure delays, and airport closures.
-    """
-    import requests
-    import xml.etree.ElementTree as ET
-    try:
-        r = requests.get("https://nasstatus.faa.gov/api/airport-status-information", timeout=10)
-        r.raise_for_status()
-        root = ET.fromstring(r.text)
-        advisories = []
-        for delay_type in root.findall("Delay_type"):
-            for gd in delay_type.findall(".//Ground_Delay"):
-                arpt = gd.findtext("ARPT", "")
-                reason = gd.findtext("Reason", "")
-                avg = gd.findtext("Avg", "")
-                mx = gd.findtext("Max", "")
-                advisories.append(f"{arpt}: Ground Delay Program - {reason}, avg {avg}, max {mx}")
-            for gs in delay_type.findall(".//Ground_Stop"):
-                arpt = gs.findtext("ARPT", "")
-                reason = gs.findtext("Reason", "")
-                end = gs.findtext("End_Time", "")
-                advisories.append(f"{arpt}: Ground Stop - {reason}, until {end}")
-            for ad in delay_type.findall(".//Arrive_Depart_Delay"):
-                arpt = ad.findtext("ARPT", "")
-                reason = ad.findtext("Reason", "")
-                mn = ad.findtext("Min", "")
-                mx = ad.findtext("Max", "")
-                trend = ad.findtext("Trend", "")
-                advisories.append(f"{arpt}: Arrival/Departure Delay - {reason}, {mn}-{mx}, trend {trend}")
-            for cl in delay_type.findall(".//Closure"):
-                arpt = cl.findtext("ARPT", "")
-                reason = cl.findtext("Reason", "")
-                advisories.append(f"{arpt}: CLOSED - {reason}")
-        return advisories
-    except Exception:
-        return []
-
-
-def _build_sky_prompt(snapshot, ts_str):
-    """Build a structured prompt with all current data for the AI summary."""
-    top10 = snapshot["airports"][:10]
-    total_ac = snapshot["total_us_aircraft"]
-    total_active = sum(a["active"] for a in snapshot["airports"])
-    total_ground = sum(a["on_ground"] for a in snapshot["airports"])
-    total_desc = sum(a["descending"] for a in snapshot["airports"])
-    total_climb = sum(a["climbing"] for a in snapshot["airports"])
-    ground_pct = round(total_ground / total_active * 100) if total_active else 0
-
-    airport_lines = "\n".join(
-        f"  {a['iata']} ({a['name']}): {a['active']} active, "
-        f"{a['on_ground']} ground ({round(a['on_ground']/a['active']*100) if a['active'] else 0}%), "
-        f"{a['descending']} arriving, {a['climbing']} departing"
-        for a in top10
-    )
-
-    high_ground = [a for a in top10 if a["active"] > 0 and a["on_ground"] / a["active"] > 0.7]
-    arrival_heavy = [a for a in top10 if a["descending"] > a["climbing"] * 2 and a["descending"] >= 5]
-    departure_heavy = [a for a in top10 if a["climbing"] > a["descending"] * 2 and a["climbing"] >= 5]
-
-    patterns = []
-    if high_ground:
-        patterns.append(f"High ground congestion (>70%): {', '.join(a['iata'] for a in high_ground)}")
-    if arrival_heavy:
-        patterns.append(f"Arrival-heavy airports: {', '.join(a['iata'] for a in arrival_heavy)}")
-    if departure_heavy:
-        patterns.append(f"Departure-heavy airports: {', '.join(a['iata'] for a in departure_heavy)}")
-
-    pattern_block = "\n".join(f"  - {p}" for p in patterns) if patterns else "  None detected"
-
-    # FAA advisories
-    faa = _fetch_faa_status()
-    faa_block = "\n".join(f"  - {a}" for a in faa) if faa else "  No active FAA advisories"
-
-    return f"""CURRENT DATA ({ts_str}):
-  Total aircraft over US: {total_ac:,}
-  Total active near airports: {total_active}
-  Overall ground rate: {ground_pct}% ({total_ground} ground / {total_active} active)
-  Total arriving (descending): {total_desc}
-  Total departing (climbing): {total_climb}
-
-TOP 10 AIRPORTS:
-{airport_lines}
-
-NOTABLE PATTERNS:
-{pattern_block}
-
-FAA ADVISORIES (live):
-{faa_block}
-
-EXAMPLE OUTPUTS (match this tone and structure):
-
-Example 1 (high ground congestion):
-"ORD leads ground congestion at 71%, with 89 of 125 active aircraft sitting on tarmac, pointing to taxi delays and likely gate holds. ATL and DFW are both running arrival-heavy at 2:1 ratios, pulling in 40+ descending aircraft each while departures lag behind. The system has 4,800 aircraft over US airspace with a 48% overall ground rate, well above the typical mid-afternoon 35%."
-
-Example 2 (balanced, quiet system):
-"US airspace is carrying 3,200 aircraft this Sunday evening, about 20% below weekday averages. ATL tops the board at 95 active but only 33% on the ground, a clean flow with 22 arrivals matching 24 departures. No airport in the top 10 exceeds 40% ground rate, so taxi queues are short across the board."
-
-Example 3 (departure surge):
-"DEN is pushing departures hard with 45 climbing vs. 18 descending, likely a post-bank push from United's hub operation. LAX and SFO show the opposite pattern, each pulling in 30+ arrivals with fewer than 15 departures, consistent with West Coast evening arrival waves. Ground rates are moderate at 38% system-wide across 5,100 tracked aircraft."
-
-Write a 3-4 sentence briefing about the CURRENT DATA above. All times should be in Eastern Time. Match the examples' tone and data density. If FAA advisories are active, weave them into the analysis naturally (don't just list them)."""
-
-
-_AI_SYSTEM_PROMPT = """You are a concise aviation analyst writing snapshot briefings of US airspace.
-Your audience is informed general readers, like a flight tracker blog or aviation Twitter account.
-Rules:
-- Exactly 3-4 sentences. No more.
-- Lead with the most interesting finding, not a generic overview.
-- Use specific numbers (airport codes, counts, percentages).
-- Compare airports to each other when relevant.
-- If ground rates are high, note traveler impact (delays, taxi queues).
-- If arrival/departure imbalance exists, note it.
-- If FAA advisories are active, reference them with context (ground stops, delay programs, weather causes).
-- All times in Eastern Time (ET). Convert UTC timestamps if needed.
-- Present tense. No hedging. State what the data shows.
-- No em dashes. No inflated language. No filler phrases.
-- Sound like a sharp analyst, not a press release."""
-
-
-@st.cache_data(ttl=300)
-def _get_ai_summary(prompt):
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        try:
-            api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
-        except Exception:
-            api_key = ""
-    if not api_key:
-        return None
-    client = anthropic.Anthropic(api_key=api_key)
-    msg = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=250,
-        temperature=0.3,
-        system=_AI_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return msg.content[0].text
-
-
-# AI Briefing (auto-triggered)
-if HAS_ANTHROPIC:
-    prompt = _build_sky_prompt(snapshot, local_ts)
-    summary = _get_ai_summary(prompt)
-    if summary:
-        st.markdown(
-            f'<div style="background:linear-gradient(135deg, {NAVY_MID} 0%, {NAVY} 100%); '
-            f'padding:1rem 1.5rem; border-radius:8px; border-left:3px solid {RED}; '
-            f'margin:0.5rem 0 1rem 0; overflow-wrap:break-word; word-break:break-word;">'
-            f'<span style="color:{WHITE}; font-size:clamp(0.8rem, 2.5vw, 0.92rem); line-height:1.7; font-family:Inter,sans-serif;">'
-            f'{summary}</span></div>',
-            unsafe_allow_html=True,
-        )
-
-# FAA Advisories banner
-_faa_advisories = _fetch_faa_status()
-if _faa_advisories:
-    _faa_items = "".join(
-        f'<div style="padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.06);">'
-        f'<span style="color:#ef4444;font-weight:700;font-family:JetBrains Mono,monospace;font-size:0.8em;">'
-        f'{a.split(":")[0]}</span>'
-        f'<span style="color:{SILVER};font-size:0.85em;margin-left:8px;">{":".join(a.split(":")[1:])}</span></div>'
-        for a in _faa_advisories
-    )
+    # Header
     st.markdown(
-        f'<div style="background:linear-gradient(135deg, {NAVY_MID} 0%, {NAVY} 100%);'
-        f'padding:0.75rem 1.25rem;border-radius:8px;border-left:3px solid #ef4444;'
-        f'margin:0.5rem 0 1rem 0;">'
-        f'<div style="font-size:0.7em;text-transform:uppercase;letter-spacing:1px;color:#ef4444;'
-        f'font-weight:700;margin-bottom:6px;font-family:Inter,sans-serif;">'
-        f'FAA Advisories</div>{_faa_items}</div>',
+        f'<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:12px;">'
+        f'<span style="font-family:JetBrains Mono,monospace;font-size:2.2em;font-weight:900;color:{WHITE};">{iata}</span>'
+        f'<div><div style="font-size:1em;font-weight:700;color:{WHITE};">{apt["name"]}</div>'
+        f'<div style="font-size:0.7em;color:{SILVER};">{apt.get("icao","")} | {apt["active"]} active aircraft</div></div>'
+        f'<div style="margin-left:auto;text-align:right;">'
+        f'<span style="font-family:JetBrains Mono,monospace;font-size:1.8em;font-weight:900;color:{color};">{score:.0f}</span>'
+        f'<div style="font-size:0.65em;color:{color};font-weight:600;">{label}</div>'
+        f'</div></div>',
         unsafe_allow_html=True,
     )
 
-# Airport detail via query params (?airport=ATL)
-filtered_airports = snapshot["airports"]
-_qp = st.query_params
-selected_airport_str = _qp.get("airport", "")
-if selected_airport_str:
-    selected_airport_str = selected_airport_str.upper()
+    # Key stats in columns
+    _cs = st.columns(6)
+    _stats = [
+        ("Ground", str(apt["on_ground"]), f"{gpct}%"),
+        ("Airborne", str(apt["airborne"]), f"{apt['low_altitude']} low"),
+        ("Arriving", str(apt["descending"]), "desc"),
+        ("Departing", str(apt["climbing"]), "climb"),
+        ("Today", f'{hist.get("avg_today","--")}', "avg"),
+        ("3-Day", f'{hist.get("avg_3d","--")}', "avg"),
+    ]
+    for _c, (_l, _v, _s) in zip(_cs, _stats):
+        with _c:
+            st.markdown(
+                f'<div style="text-align:center;padding:8px 4px;background:rgba(255,255,255,0.03);border-radius:6px;">'
+                f'<div style="font-family:JetBrains Mono,monospace;font-size:1.3em;font-weight:800;color:{WHITE};">{_v}</div>'
+                f'<div style="font-size:0.6em;color:{SILVER};text-transform:uppercase;letter-spacing:1px;">{_l}</div>'
+                f'<div style="font-size:0.55em;color:{SILVER_DARK};">{_s}</div></div>',
+                unsafe_allow_html=True,
+            )
 
-# ---------------------------------------------------------------------------
-# Airport Detail Card (baseball card view)
-# ---------------------------------------------------------------------------
-if selected_airport_str:
-    _sel_iata = selected_airport_str
-    _sel_apt = next((a for a in snapshot["airports"] if a["iata"] == _sel_iata), None)
-    if _sel_apt:
-        st.markdown("---")
-        if st.button("< Back to Dashboard"):
-            st.query_params.clear()
-            st.rerun()
-        _sel_sc = next((sc for apt, sc in scored["airports"] if apt.get("iata") == _sel_iata), None)
-        _sel_hist = airport_hist.get(_sel_apt.get("icao", ""), {})
-        _sel_score = _sel_sc["score"] if _sel_sc else 0
-        _sel_color = _score_color(_sel_score)
-        _sel_label = _score_label(_sel_score)
-        _ground_pct_card = round(_sel_apt["on_ground"] / _sel_apt["active"] * 100) if _sel_apt["active"] else 0
-
-        # Card header
-        st.markdown(
-            f'<div style="background:linear-gradient(135deg, {NAVY_MID} 0%, {NAVY} 100%);'
-            f'border-radius:12px;border-top:4px solid {RED};padding:24px 28px 20px;margin:12px 0 8px;">'
-            f'<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">'
-            f'<span style="font-family:JetBrains Mono,monospace;font-size:2.4em;font-weight:900;color:{WHITE};">{_sel_apt["iata"]}</span>'
-            f'<div><div style="font-size:1.1em;font-weight:700;color:{WHITE};">{_sel_apt["name"]}</div>'
-            f'<div style="font-size:0.75em;color:{SILVER};margin-top:2px;">{_sel_apt.get("icao","")} | {_sel_apt["active"]} active aircraft</div></div>'
-            f'<div style="margin-left:auto;text-align:right;">'
-            f'<span style="font-family:JetBrains Mono,monospace;font-size:2em;font-weight:900;color:{_sel_color};">{_sel_score:.0f}</span>'
-            f'<div style="font-size:0.7em;color:{_sel_color};font-weight:600;">{_sel_label}</div>'
-            f'</div></div></div>',
-            unsafe_allow_html=True,
-        )
-
-        # Stat row
-        _card_stats = [
-            ("On Ground", str(_sel_apt["on_ground"]), f"{_ground_pct_card}% of active"),
-            ("Airborne", str(_sel_apt["airborne"]), f"{_sel_apt['low_altitude']} below 10k ft"),
-            ("Arriving", str(_sel_apt["descending"]), "Descending now"),
-            ("Departing", str(_sel_apt["climbing"]), "Climbing now"),
-            ("Today Avg", f'{_sel_hist.get("avg_today", "-")}' if _sel_hist.get("avg_today") else "-", "Last 24h score"),
-            ("3-Day Avg", f'{_sel_hist.get("avg_3d", "-")}' if _sel_hist.get("avg_3d") else "-", "Rolling average"),
-        ]
-        _stat_cols = st.columns(len(_card_stats))
-        for _col, (_lbl, _val, _sub) in zip(_stat_cols, _card_stats):
-            with _col:
-                st.markdown(
-                    f'<div class="metric-card" style="padding:12px 8px;">'
-                    f'<div class="metric-value" style="font-size:1.5em;">{_val}</div>'
-                    f'<div class="metric-label">{_lbl}</div>'
-                    f'<div class="metric-sub">{_sub}</div></div>',
-                    unsafe_allow_html=True,
+    # Health components + Airline donut side by side
+    _cl, _cr = st.columns(2)
+    with _cl:
+        if sc:
+            comps = sc["components"]
+            _comp_html = f'<div style="margin-top:12px;">'
+            for cname, clbl in [("ground_ratio", "Ground Ratio"), ("low_alt_density", "Low Alt Density"), ("flow_balance", "Flow Balance")]:
+                c = comps[cname]
+                cc = _bar_color(c["score"])
+                _comp_html += (
+                    f'<div style="display:flex;align-items:center;gap:8px;margin:6px 0;">'
+                    f'<span style="min-width:90px;font-size:0.7em;color:{SILVER};">{clbl}</span>'
+                    f'<div style="flex:1;height:8px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden;">'
+                    f'<div style="width:{c["score"]}%;height:100%;background:{cc};border-radius:4px;"></div></div>'
+                    f'<span style="min-width:28px;text-align:right;font-family:JetBrains Mono,monospace;font-size:0.75em;color:{cc};">{c["score"]:.0f}</span></div>'
                 )
+            _comp_html += '</div>'
+            st.markdown(_comp_html, unsafe_allow_html=True)
 
-        # Two columns: Health gauge + Airline donut
-        _card_left, _card_right = st.columns(2)
-        with _card_left:
-            st.markdown(f'<div class="section-header" style="font-size:0.9em;">Health Score</div>', unsafe_allow_html=True)
-            if _sel_sc:
-                _comps = _sel_sc["components"]
-                st.plotly_chart(
-                    _make_gauge(_sel_score, _sel_apt["iata"], _sel_label),
-                    use_container_width=True, config={"displayModeBar": False, "scrollZoom": False},
-                )
-                # Component breakdown
-                _comp_html = ""
-                for _cname, _clabel in [("ground_ratio", "Ground Ratio"), ("low_alt_density", "Low Alt Density"), ("flow_balance", "Flow Balance")]:
-                    _c = _comps[_cname]
-                    _ccolor = _bar_color(_c["score"])
-                    _comp_html += (
-                        f'<div style="display:flex;align-items:center;gap:8px;margin:4px 0;">'
-                        f'<span style="min-width:100px;font-size:0.7em;color:{SILVER};font-family:Inter,sans-serif;">{_clabel}</span>'
-                        f'<div style="flex:1;height:6px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden;">'
-                        f'<div style="width:{_c["score"]}%;height:100%;background:{_ccolor};border-radius:3px;"></div></div>'
-                        f'<span style="min-width:32px;text-align:right;font-family:JetBrains Mono,monospace;font-size:0.75em;color:{_ccolor};">{_c["score"]:.0f}</span></div>'
-                    )
-                st.markdown(_comp_html, unsafe_allow_html=True)
-
-        with _card_right:
-            st.markdown(f'<div class="section-header" style="font-size:0.9em;">Airline Mix</div>', unsafe_allow_html=True)
-            _airlines = _sel_apt.get("airlines", {})
-            if _airlines:
-                _sorted_al = sorted(_airlines.items(), key=lambda x: -x[1])
-                _al_labels = [a[0] for a in _sorted_al[:8]]
-                _al_values = [a[1] for a in _sorted_al[:8]]
-                if len(_sorted_al) > 8:
-                    _al_labels.append("Other")
-                    _al_values.append(sum(a[1] for a in _sorted_al[8:]))
-                AIRLINE_COLORS = {
-                    "Delta": "#C8102E", "American": "#0078D2", "United": "#002244",
-                    "Southwest": "#F9B612", "JetBlue": "#003DA5", "Spirit": "#FFD200",
-                    "Frontier": "#006847", "Alaska": "#01426A", "Hawaiian": "#2D1E5B",
-                    "SkyWest": "#8B9DAF", "FedEx": "#660099", "UPS": "#351C15",
-                    "Private/GA": "#5C6F82",
-                }
-                _al_colors = [AIRLINE_COLORS.get(n, SILVER_DARK) for n in _al_labels]
-                _fig_donut_apt = go.Figure(go.Pie(
-                    labels=_al_labels, values=_al_values, hole=0.5,
-                    marker=dict(colors=_al_colors),
-                    textinfo="label+value",
-                    textfont=dict(size=10, family="JetBrains Mono"),
-                    hoverinfo="label+value+percent",
-                ))
-                _fig_donut_apt.update_layout(
-                    template="plotly_dark",
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    height=320,
-                    margin=dict(t=10, b=10, l=10, r=10),
-                    font=dict(family="Inter, sans-serif", color="white"),
-                    showlegend=False,
-                    annotations=[dict(
-                        text=f"<b>{sum(_al_values)}</b><br><span style='font-size:9px'>aircraft</span>",
-                        x=0.5, y=0.5, font_size=20, showarrow=False,
-                        font=dict(color="white", family="JetBrains Mono"),
-                    )],
-                )
-                st.plotly_chart(_fig_donut_apt, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
-
-        # Arrival/Departure flow mini chart
-        if _sel_apt["descending"] + _sel_apt["climbing"] > 0:
-            st.markdown(f'<div class="section-header" style="font-size:0.9em;">Traffic Flow</div>', unsafe_allow_html=True)
-            _fig_flow_apt = go.Figure()
-            _cats = ["Arriving", "Departing", "On Ground", "In Pattern"]
-            _pattern = max(0, _sel_apt["airborne"] - _sel_apt["descending"] - _sel_apt["climbing"])
-            _vals = [_sel_apt["descending"], _sel_apt["climbing"], _sel_apt["on_ground"], _pattern]
-            _colors = [RED, "#2E8B57", NAVY_LIGHT, SILVER]
-            _fig_flow_apt.add_trace(go.Bar(
-                x=_cats, y=_vals,
-                marker_color=_colors,
-                text=_vals, textposition="outside",
-                textfont=dict(color="white", size=12, family="JetBrains Mono"),
+        # Flow bar chart
+        if apt["descending"] + apt["climbing"] > 0:
+            _pat = max(0, apt["airborne"] - apt["descending"] - apt["climbing"])
+            _fig_f = go.Figure(go.Bar(
+                x=["Arriving", "Departing", "Ground", "Pattern"],
+                y=[apt["descending"], apt["climbing"], apt["on_ground"], _pat],
+                marker_color=[RED, "#2E8B57", NAVY_LIGHT, SILVER],
+                text=[apt["descending"], apt["climbing"], apt["on_ground"], _pat],
+                textposition="outside",
+                textfont=dict(color="white", size=11, family="JetBrains Mono"),
                 hoverinfo="none",
             ))
-            _fig_flow_apt.update_layout(
-                template="plotly_dark",
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                height=250,
-                font=dict(family="JetBrains Mono, monospace", color="white"),
-                margin=dict(l=20, r=20, t=10, b=40),
-                yaxis=dict(gridcolor="rgba(255,255,255,0.05)", title="Aircraft"),
+            _fig_f.update_layout(
+                template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                height=200, font=dict(family="JetBrains Mono", color="white"),
+                margin=dict(l=10, r=10, t=5, b=30),
+                yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
             )
-            st.plotly_chart(_fig_flow_apt, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+            st.plotly_chart(_fig_f, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
-        st.markdown("---")
-        st.stop()  # Don't render the main dashboard when viewing an airport card
+    with _cr:
+        airlines = apt.get("airlines", {})
+        if airlines:
+            _sal = sorted(airlines.items(), key=lambda x: -x[1])
+            _labels = [a[0] for a in _sal[:8]]
+            _values = [a[1] for a in _sal[:8]]
+            if len(_sal) > 8:
+                _labels.append("Other")
+                _values.append(sum(a[1] for a in _sal[8:]))
+            _AC = {
+                "Delta": "#C8102E", "American": "#0078D2", "United": "#002244",
+                "Southwest": "#F9B612", "JetBlue": "#003DA5", "Spirit": "#FFD200",
+                "Frontier": "#006847", "Alaska": "#01426A", "SkyWest": "#8B9DAF",
+                "Republic": "#7A8B9C", "Private/GA": "#5C6F82",
+            }
+            _fig_d = go.Figure(go.Pie(
+                labels=_labels, values=_values, hole=0.5,
+                marker=dict(colors=[_AC.get(n, SILVER_DARK) for n in _labels]),
+                textinfo="label+value",
+                textfont=dict(size=10, family="JetBrains Mono"),
+                hoverinfo="label+value+percent",
+            ))
+            _fig_d.update_layout(
+                template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                height=300, margin=dict(t=5, b=5, l=5, r=5),
+                font=dict(family="Inter", color="white"), showlegend=False,
+                annotations=[dict(
+                    text=f"<b>{sum(_values)}</b><br><span style='font-size:9px'>aircraft</span>",
+                    x=0.5, y=0.5, font_size=18, showarrow=False,
+                    font=dict(color="white", family="JetBrains Mono"),
+                )],
+            )
+            st.plotly_chart(_fig_d, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+
+# Check query params and open dialog if airport is specified
+_qp = st.query_params
+_qp_airport = _qp.get("airport", "")
+if _qp_airport:
+    _show_airport_card(_qp_airport.upper())
 
 # Congestion Leaderboard
 st.markdown('<div class="section-header">Airport Congestion Leaderboard</div>', unsafe_allow_html=True)
