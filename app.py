@@ -636,7 +636,7 @@ def _load_all_historical():
         scores_today = []
         scores_3d = []
         trend = []
-        apt_scores = defaultdict(lambda: {"today": [], "3d": []})
+        apt_scores = defaultdict(lambda: {"1h": [], "3h": [], "today": [], "3d": []})
 
         for snap_time in sorted(snapshots.keys()):
             airports = snapshots[snap_time]
@@ -654,10 +654,14 @@ def _load_all_historical():
 
             for apt, sc in scored_snap["airports"]:
                 icao = apt.get("icao", "")
-                if age <= timedelta(days=3):
-                    apt_scores[icao]["3d"].append(sc["score"])
+                if age <= timedelta(hours=1):
+                    apt_scores[icao]["1h"].append(sc["score"])
+                if age <= timedelta(hours=3):
+                    apt_scores[icao]["3h"].append(sc["score"])
                 if age <= timedelta(days=1):
                     apt_scores[icao]["today"].append(sc["score"])
+                if age <= timedelta(days=3):
+                    apt_scores[icao]["3d"].append(sc["score"])
 
             trend.append({"time": snap_time, "score": sys_score,
                           "healthy": scored_snap["system"]["healthy"],
@@ -669,9 +673,12 @@ def _load_all_historical():
 
         airport_hist = {}
         for icao, s in apt_scores.items():
+            _avg = lambda lst: round(sum(lst) / len(lst), 1) if lst else None
             airport_hist[icao] = {
-                "avg_today": round(sum(s["today"]) / len(s["today"]), 1) if s["today"] else None,
-                "avg_3d": round(sum(s["3d"]) / len(s["3d"]), 1) if s["3d"] else None,
+                "avg_1h": _avg(s["1h"]),
+                "avg_3h": _avg(s["3h"]),
+                "avg_today": _avg(s["today"]),
+                "avg_3d": _avg(s["3d"]),
             }
 
         return avg_today, avg_3d, n_snapshots, baselines, trend, airport_hist
@@ -883,6 +890,20 @@ if trend_data and len(trend_data) >= 3:
 # Airport detail dialog (baseball card popup)
 filtered_airports = snapshot["airports"]
 
+def _delta_html(val, net_val, suffix="", is_pct=False):
+    """Render a delta vs network average."""
+    if val is None or net_val is None or net_val == 0:
+        return ""
+    diff = val - net_val
+    if is_pct:
+        sign = "+" if diff > 0 else ""
+        color = "#ef4444" if diff > 5 else "#22c55e" if diff < -5 else SILVER_DARK
+        return f'<span style="font-size:0.55em;color:{color};margin-left:4px;">{sign}{diff:.0f}pp</span>'
+    sign = "+" if diff > 0 else ""
+    color = SILVER_DARK
+    return f'<span style="font-size:0.55em;color:{color};margin-left:4px;">{sign}{diff:.1f}{suffix}</span>'
+
+
 @st.dialog("Airport Detail", width="large")
 def _show_airport_card(iata):
     apt = next((a for a in snapshot["airports"] if a["iata"] == iata), None)
@@ -896,9 +917,17 @@ def _show_airport_card(iata):
     label = _score_label(score)
     gpct = round(apt["on_ground"] / apt["active"] * 100) if apt["active"] else 0
 
+    # Network averages for comparison
+    _active_apts = [a for a in snapshot["airports"] if a["active"] > 0]
+    _n = len(_active_apts) or 1
+    net_ground_pct = round(sum(a["on_ground"] for a in _active_apts) / max(sum(a["active"] for a in _active_apts), 1) * 100)
+    net_active = round(sum(a["active"] for a in _active_apts) / _n, 1)
+    net_desc = round(sum(a["descending"] for a in _active_apts) / _n, 1)
+    net_climb = round(sum(a["climbing"] for a in _active_apts) / _n, 1)
+
     # Header
     st.markdown(
-        f'<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:12px;">'
+        f'<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:8px;">'
         f'<span style="font-family:JetBrains Mono,monospace;font-size:2.2em;font-weight:900;color:{WHITE};">{iata}</span>'
         f'<div><div style="font-size:1em;font-weight:700;color:{WHITE};">{apt["name"]}</div>'
         f'<div style="font-size:0.7em;color:{SILVER};">{apt.get("icao","")} | {apt["active"]} active aircraft</div></div>'
@@ -909,98 +938,103 @@ def _show_airport_card(iata):
         unsafe_allow_html=True,
     )
 
-    # Key stats in columns
-    _cs = st.columns(6)
-    _stats = [
-        ("Ground", str(apt["on_ground"]), f"{gpct}%"),
-        ("Airborne", str(apt["airborne"]), f"{apt['low_altitude']} low"),
-        ("Arriving", str(apt["descending"]), "desc"),
-        ("Departing", str(apt["climbing"]), "climb"),
-        ("Today", f'{hist.get("avg_today","--")}', "avg"),
-        ("3-Day", f'{hist.get("avg_3d","--")}', "avg"),
+    # Row 1: Health scores (Now, 1h, 3h, Today)
+    _score_items = [
+        ("NOW", score),
+        ("1-HR", hist.get("avg_1h")),
+        ("3-HR", hist.get("avg_3h")),
+        ("TODAY", hist.get("avg_today")),
     ]
-    for _c, (_l, _v, _s) in zip(_cs, _stats):
-        with _c:
-            st.markdown(
-                f'<div style="text-align:center;padding:8px 4px;background:rgba(255,255,255,0.03);border-radius:6px;">'
-                f'<div style="font-family:JetBrains Mono,monospace;font-size:1.3em;font-weight:800;color:{WHITE};">{_v}</div>'
-                f'<div style="font-size:0.6em;color:{SILVER};text-transform:uppercase;letter-spacing:1px;">{_l}</div>'
-                f'<div style="font-size:0.55em;color:{SILVER_DARK};">{_s}</div></div>',
-                unsafe_allow_html=True,
+    _score_html = '<div style="display:flex;gap:8px;margin:8px 0;">'
+    for _slabel, _sval in _score_items:
+        if _sval is not None:
+            _sc = _bar_color(_sval)
+            _score_html += (
+                f'<div style="flex:1;padding:10px 6px;background:rgba(255,255,255,0.03);border-radius:8px;text-align:center;">'
+                f'<div style="font-family:JetBrains Mono,monospace;font-size:1.4em;font-weight:800;color:{_sc};">{_sval:.0f}</div>'
+                f'<div style="font-size:0.55em;color:{SILVER};text-transform:uppercase;letter-spacing:1px;margin-top:2px;">{_slabel}</div>'
+                f'{_score_bar_html(_sval)}</div>'
             )
+        else:
+            _score_html += (
+                f'<div style="flex:1;padding:10px 6px;background:rgba(255,255,255,0.03);border-radius:8px;text-align:center;">'
+                f'<div style="font-family:JetBrains Mono,monospace;font-size:1.4em;font-weight:800;color:{SILVER_DARK};">--</div>'
+                f'<div style="font-size:0.55em;color:{SILVER};text-transform:uppercase;letter-spacing:1px;margin-top:2px;">{_slabel}</div></div>'
+            )
+    _score_html += '</div>'
+    st.markdown(_score_html, unsafe_allow_html=True)
 
-    # Health components + Airline donut side by side
+    # Row 2: Unified metrics box with deltas
+    _gd = _delta_html(gpct, net_ground_pct, is_pct=True)
+    _ad = _delta_html(apt["active"], net_active)
+    _dd = _delta_html(apt["descending"], net_desc)
+    _cd = _delta_html(apt["climbing"], net_climb)
+    st.markdown(
+        f'<div style="background:rgba(255,255,255,0.03);border-radius:8px;padding:12px;margin:4px 0;">'
+        f'<div style="display:flex;gap:6px;text-align:center;">'
+        f'<div style="flex:1;padding:6px;border-right:1px solid rgba(255,255,255,0.06);">'
+        f'<div style="font-family:JetBrains Mono,monospace;font-size:1.2em;font-weight:800;color:{WHITE};">{apt["on_ground"]}{_gd}</div>'
+        f'<div style="font-size:0.55em;color:{SILVER};text-transform:uppercase;letter-spacing:0.5px;">Ground ({gpct}%)</div>'
+        f'<div style="font-size:0.5em;color:{SILVER_DARK};">net avg: {net_ground_pct}%</div></div>'
+        f'<div style="flex:1;padding:6px;border-right:1px solid rgba(255,255,255,0.06);">'
+        f'<div style="font-family:JetBrains Mono,monospace;font-size:1.2em;font-weight:800;color:{WHITE};">{apt["airborne"]}{_ad}</div>'
+        f'<div style="font-size:0.55em;color:{SILVER};text-transform:uppercase;letter-spacing:0.5px;">Airborne</div>'
+        f'<div style="font-size:0.5em;color:{SILVER_DARK};">{apt["low_altitude"]} below 10k ft</div></div>'
+        f'<div style="flex:1;padding:6px;border-right:1px solid rgba(255,255,255,0.06);">'
+        f'<div style="font-family:JetBrains Mono,monospace;font-size:1.2em;font-weight:800;color:{RED};">{apt["descending"]}{_dd}</div>'
+        f'<div style="font-size:0.55em;color:{SILVER};text-transform:uppercase;letter-spacing:0.5px;">Arriving</div>'
+        f'<div style="font-size:0.5em;color:{SILVER_DARK};">net avg: {net_desc:.0f}</div></div>'
+        f'<div style="flex:1;padding:6px;">'
+        f'<div style="font-family:JetBrains Mono,monospace;font-size:1.2em;font-weight:800;color:#2E8B57;">{apt["climbing"]}{_cd}</div>'
+        f'<div style="font-size:0.55em;color:{SILVER};text-transform:uppercase;letter-spacing:0.5px;">Departing</div>'
+        f'<div style="font-size:0.5em;color:{SILVER_DARK};">net avg: {net_climb:.0f}</div></div>'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    # Row 3: Health components + Airline donut
     _cl, _cr = st.columns(2)
     with _cl:
         if sc:
             comps = sc["components"]
-            _comp_html = f'<div style="margin-top:12px;">'
-            for cname, clbl in [("ground_ratio", "Ground Ratio"), ("low_alt_density", "Low Alt Density"), ("flow_balance", "Flow Balance")]:
+            _comp_html = '<div style="margin-top:8px;">'
+            for cname, clbl, wt in [("ground_ratio", "Ground Ratio", "40%"), ("low_alt_density", "Low Alt Density", "35%"), ("flow_balance", "Flow Balance", "25%")]:
                 c = comps[cname]
                 cc = _bar_color(c["score"])
                 _comp_html += (
-                    f'<div style="display:flex;align-items:center;gap:8px;margin:6px 0;">'
-                    f'<span style="min-width:90px;font-size:0.7em;color:{SILVER};">{clbl}</span>'
-                    f'<div style="flex:1;height:8px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden;">'
+                    f'<div style="display:flex;align-items:center;gap:6px;margin:5px 0;">'
+                    f'<span style="min-width:95px;font-size:0.65em;color:{SILVER};">{clbl} <span style="color:{SILVER_DARK};">({wt})</span></span>'
+                    f'<div style="flex:1;height:7px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden;">'
                     f'<div style="width:{c["score"]}%;height:100%;background:{cc};border-radius:4px;"></div></div>'
-                    f'<span style="min-width:28px;text-align:right;font-family:JetBrains Mono,monospace;font-size:0.75em;color:{cc};">{c["score"]:.0f}</span></div>'
+                    f'<span style="min-width:26px;text-align:right;font-family:JetBrains Mono,monospace;font-size:0.7em;color:{cc};">{c["score"]:.0f}</span></div>'
                 )
             _comp_html += '</div>'
             st.markdown(_comp_html, unsafe_allow_html=True)
-
-        # Flow bar chart
-        if apt["descending"] + apt["climbing"] > 0:
-            _pat = max(0, apt["airborne"] - apt["descending"] - apt["climbing"])
-            _fig_f = go.Figure(go.Bar(
-                x=["Arriving", "Departing", "Ground", "Pattern"],
-                y=[apt["descending"], apt["climbing"], apt["on_ground"], _pat],
-                marker_color=[RED, "#2E8B57", NAVY_LIGHT, SILVER],
-                text=[apt["descending"], apt["climbing"], apt["on_ground"], _pat],
-                textposition="outside",
-                textfont=dict(color="white", size=11, family="JetBrains Mono"),
-                hoverinfo="none",
-            ))
-            _fig_f.update_layout(
-                template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                height=200, font=dict(family="JetBrains Mono", color="white"),
-                margin=dict(l=10, r=10, t=5, b=30),
-                yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-            )
-            st.plotly_chart(_fig_f, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
     with _cr:
         airlines = apt.get("airlines", {})
         if airlines:
             _sal = sorted(airlines.items(), key=lambda x: -x[1])
-            _labels = [a[0] for a in _sal[:8]]
-            _values = [a[1] for a in _sal[:8]]
-            if len(_sal) > 8:
-                _labels.append("Other")
-                _values.append(sum(a[1] for a in _sal[8:]))
-            _AC = {
-                "Delta": "#C8102E", "American": "#0078D2", "United": "#002244",
-                "Southwest": "#F9B612", "JetBlue": "#003DA5", "Spirit": "#FFD200",
-                "Frontier": "#006847", "Alaska": "#01426A", "SkyWest": "#8B9DAF",
-                "Republic": "#7A8B9C", "Private/GA": "#5C6F82",
-            }
-            _fig_d = go.Figure(go.Pie(
-                labels=_labels, values=_values, hole=0.5,
-                marker=dict(colors=[_AC.get(n, SILVER_DARK) for n in _labels]),
-                textinfo="label+value",
-                textfont=dict(size=10, family="JetBrains Mono"),
-                hoverinfo="label+value+percent",
-            ))
-            _fig_d.update_layout(
-                template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                height=300, margin=dict(t=5, b=5, l=5, r=5),
-                font=dict(family="Inter", color="white"), showlegend=False,
-                annotations=[dict(
-                    text=f"<b>{sum(_values)}</b><br><span style='font-size:9px'>aircraft</span>",
-                    x=0.5, y=0.5, font_size=18, showarrow=False,
-                    font=dict(color="white", family="JetBrains Mono"),
-                )],
-            )
-            st.plotly_chart(_fig_d, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+            _al_html = '<div style="margin-top:8px;">'
+            for _aname, _acnt in _sal[:6]:
+                _apct = round(_acnt / apt["active"] * 100) if apt["active"] else 0
+                _AC = {"Delta": "#C8102E", "American": "#0078D2", "United": "#002244",
+                       "Southwest": "#F9B612", "JetBlue": "#003DA5", "Spirit": "#FFD200",
+                       "Frontier": "#006847", "Alaska": "#01426A", "SkyWest": "#8B9DAF",
+                       "Republic": "#7A8B9C", "Private/GA": "#5C6F82"}
+                _acolor = _AC.get(_aname, SILVER_DARK)
+                _al_html += (
+                    f'<div style="display:flex;align-items:center;gap:6px;margin:4px 0;">'
+                    f'<span style="min-width:70px;font-size:0.65em;color:{SILVER};overflow:hidden;text-overflow:ellipsis;">{_aname}</span>'
+                    f'<div style="flex:1;height:7px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden;">'
+                    f'<div style="width:{_apct}%;height:100%;background:{_acolor};border-radius:4px;min-width:2px;"></div></div>'
+                    f'<span style="min-width:30px;text-align:right;font-family:JetBrains Mono,monospace;font-size:0.7em;color:{WHITE};">{_acnt}</span></div>'
+                )
+            if len(_sal) > 6:
+                _rest = sum(c for _, c in _sal[6:])
+                _al_html += f'<div style="font-size:0.6em;color:{SILVER_DARK};margin-top:4px;">+{len(_sal)-6} more ({_rest} aircraft)</div>'
+            _al_html += '</div>'
+            st.markdown(_al_html, unsafe_allow_html=True)
 
 # Check query params and open dialog if airport is specified
 _qp = st.query_params
