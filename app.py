@@ -600,11 +600,11 @@ def _get_md_token():
 def _load_all_historical():
     """Single cached query for baselines, avg scores, and trend data.
 
-    Returns (avg_today, avg_3d, n_snapshots, baselines, trend_data, airport_hist).
+    Returns (avg_1h, avg_3h, avg_today, n_snapshots, baselines, trend_data, airport_hist).
     """
     token = _get_md_token()
     if not token:
-        return None, None, None, {}, None, {}
+        return None, None, None, None, {}, None, {}
     try:
         import duckdb
         from datetime import timedelta
@@ -640,7 +640,7 @@ def _load_all_historical():
         con.close()
 
         if not snap_rows:
-            return None, None, None, baselines, None, {}
+            return None, None, None, None, baselines, None, {}
 
         snapshots = defaultdict(list)
         for r in snap_rows:
@@ -651,6 +651,8 @@ def _load_all_historical():
             })
 
         now = datetime.now(timezone.utc)
+        scores_1h = []
+        scores_3h = []
         scores_today = []
         scores_3d = []
         trend = []
@@ -665,10 +667,14 @@ def _load_all_historical():
             if hasattr(ts, 'tzinfo') and ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
             age = now - ts
-            if age <= timedelta(days=3):
-                scores_3d.append(sys_score)
+            if age <= timedelta(hours=1):
+                scores_1h.append(sys_score)
+            if age <= timedelta(hours=3):
+                scores_3h.append(sys_score)
             if age <= timedelta(days=1):
                 scores_today.append(sys_score)
+            if age <= timedelta(days=3):
+                scores_3d.append(sys_score)
 
             for apt, sc in scored_snap["airports"]:
                 icao = apt.get("icao", "")
@@ -685,9 +691,11 @@ def _load_all_historical():
                           "healthy": scored_snap["system"]["healthy"],
                           "congested": scored_snap["system"]["congested"]})
 
+        avg_1h = round(sum(scores_1h) / len(scores_1h), 1) if scores_1h else None
+        avg_3h = round(sum(scores_3h) / len(scores_3h), 1) if scores_3h else None
         avg_today = round(sum(scores_today) / len(scores_today), 1) if scores_today else None
         avg_3d = round(sum(scores_3d) / len(scores_3d), 1) if scores_3d else None
-        n_snapshots = len(scores_3d) + len(scores_today)
+        n_snapshots = len(scores_today)
 
         airport_hist = {}
         for icao, s in apt_scores.items():
@@ -699,9 +707,9 @@ def _load_all_historical():
                 "avg_3d": _avg(s["3d"]),
             }
 
-        return avg_today, avg_3d, n_snapshots, baselines, trend, airport_hist
+        return avg_1h, avg_3h, avg_today, n_snapshots, baselines, trend, airport_hist
     except Exception:
-        return None, None, None, {}, None, {}
+        return None, None, None, None, {}, None, {}
 
 
 def _make_gauge(score, title, subtitle=""):
@@ -743,7 +751,7 @@ def _make_gauge(score, title, subtitle=""):
 
 
 # Load historical baselines + scores (single cached query)
-avg_today, avg_3d, n_hist, hist_baselines, trend_data, airport_hist = _load_all_historical()
+avg_1h, avg_3h, avg_today, n_hist, hist_baselines, trend_data, airport_hist = _load_all_historical()
 
 # Score current snapshot using the DS model (with historical baselines if available)
 scored = score_snapshot(snapshot["airports"], hist_baselines)
@@ -756,17 +764,17 @@ st.markdown(f'<div class="section-header" style="margin-bottom:0.75rem;">Traffic
 g1, g2, g3 = st.columns(3, gap="large")
 with g1:
     _sub = f'{sys_info["healthy"]} healthy, {sys_info["moderate"]} moderate, {sys_info["congested"]} congested'
-    st.plotly_chart(_make_gauge(current_score, "NOW", _sub), use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+    st.plotly_chart(_make_gauge(current_score, "NOW (1 HOUR)", _sub), use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 with g2:
+    if avg_3h is not None:
+        st.plotly_chart(_make_gauge(avg_3h, "LAST 3 HOURS", f"{n_hist} snapshots"), use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+    else:
+        st.markdown(f'<div style="text-align:center;padding:60px 0;color:{SILVER_DARK};font-size:0.85em;">3-hour average<br>needs more snapshots</div>', unsafe_allow_html=True)
+with g3:
     if avg_today is not None:
         st.plotly_chart(_make_gauge(avg_today, "TODAY", f"Last 24 hours"), use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
     else:
         st.markdown(f'<div style="text-align:center;padding:60px 0;color:{SILVER_DARK};font-size:0.85em;">Today average<br>needs more snapshots</div>', unsafe_allow_html=True)
-with g3:
-    if avg_3d is not None:
-        st.plotly_chart(_make_gauge(avg_3d, "3-DAY AVG", f"{n_hist} snapshots"), use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
-    else:
-        st.markdown(f'<div style="text-align:center;padding:60px 0;color:{SILVER_DARK};font-size:0.85em;">3-day average<br>needs more snapshots</div>', unsafe_allow_html=True)
 
 # Per-airport health score table (sortable)
 display_apts = sorted(
@@ -816,16 +824,16 @@ if display_apts:
         icao = apt.get("icao", "")
         hist = airport_hist.get(icao, {})
         now_score = sc["score"]
+        avg_3h_apt = hist.get("avg_3h")
         avg_today_apt = hist.get("avg_today")
-        avg3 = hist.get("avg_3d")
         status_color = _score_color(now_score)
         health_rows += f'''<tr>
             <td style="{_td_style}font-weight:700;"><a href="?airport={apt["iata"]}" style="color:{WHITE};text-decoration:none;border-bottom:1px dotted {SILVER_DARK};">{apt["iata"]}</a></td>
             <td style="{_td_style}color:{SILVER};font-family:Inter,sans-serif;"><a href="?airport={apt["iata"]}" style="color:{SILVER};text-decoration:none;">{apt.get("name","")}</a></td>
             <td style="{_td_style}color:{status_color};font-weight:600;font-size:0.75em;">{sc["label"]}</td>
             <td style="{_td_style}min-width:120px;">{_score_bar_html(now_score)}</td>
+            <td style="{_td_style}min-width:120px;">{_score_bar_html(avg_3h_apt)}</td>
             <td style="{_td_style}min-width:120px;">{_score_bar_html(avg_today_apt)}</td>
-            <td style="{_td_style}min-width:120px;">{_score_bar_html(avg3)}</td>
             <td style="{_td_style}text-align:right;">{sc["components"]["ground_ratio"]["raw"]:.0%}</td>
             <td style="{_td_style}text-align:right;">{sc["components"]["flow_balance"]["raw"]:.0%}</td>
             <td style="{_td_style}text-align:right;">{sc["components"]["low_alt_density"]["raw"]:.0%}</td>
@@ -848,7 +856,7 @@ if display_apts:
         <thead><tr>
             <th style="{_th_style}">Airport</th><th style="{_th_style}">Name</th>
             <th style="{_th_style}">Status</th><th style="{_th_style}min-width:120px;">Now</th>
-            <th style="{_th_style}min-width:120px;">Today</th><th style="{_th_style}min-width:120px;">3-Day Avg</th>
+            <th style="{_th_style}min-width:120px;">3-Hr</th><th style="{_th_style}min-width:120px;">Today</th>
             <th style="{_th_style}text-align:right;">Ground %</th><th style="{_th_style}text-align:right;">Flow Imbal</th>
             <th style="{_th_style}text-align:right;">Low Alt %</th><th style="{_th_style}text-align:right;">Active</th>
         </tr></thead>
