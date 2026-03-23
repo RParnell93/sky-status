@@ -66,6 +66,14 @@ def setup_tables():
             PRIMARY KEY (snapshot_time, icao, airline)
         )
     """)
+    # Add status columns to airport_airlines if they don't exist
+    try:
+        con.execute("ALTER TABLE airport_airlines ADD COLUMN on_ground INTEGER DEFAULT 0")
+        con.execute("ALTER TABLE airport_airlines ADD COLUMN descending INTEGER DEFAULT 0")
+        con.execute("ALTER TABLE airport_airlines ADD COLUMN climbing INTEGER DEFAULT 0")
+        con.execute("ALTER TABLE airport_airlines ADD COLUMN low_alt INTEGER DEFAULT 0")
+    except Exception:
+        pass  # columns already exist
     print("Tables created (or already exist).")
     con.close()
 
@@ -101,16 +109,20 @@ def take_snapshot():
         except Exception as e:
             errors.append(f"{apt['icao']}: {e}")
 
-    # Save airline breakdown
+    # Save airline breakdown with status
     airline_inserted = 0
     for apt in data["airports"]:
+        airline_status = apt.get("airline_status", {})
         for airline, count in apt.get("airlines", {}).items():
+            status = airline_status.get(airline, {})
             try:
                 con.execute("""
                     INSERT OR IGNORE INTO airport_airlines
-                    (snapshot_time, icao, iata, airline, count)
-                    VALUES (?, ?, ?, ?, ?)
-                """, [ts, apt["icao"], apt["iata"], airline, count])
+                    (snapshot_time, icao, iata, airline, count, on_ground, descending, climbing, low_alt)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, [ts, apt["icao"], apt["iata"], airline, count,
+                      status.get("on_ground", 0), status.get("descending", 0),
+                      status.get("climbing", 0), status.get("low_alt", 0)])
                 airline_inserted += 1
             except Exception as e:
                 errors.append(f"{apt['icao']}/{airline}: {e}")

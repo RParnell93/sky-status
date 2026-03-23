@@ -276,17 +276,33 @@ def _load_from_motherduck():
             WHERE snapshot_time = ?
             ORDER BY active DESC
         """, [snap_time]).fetchall()
-        # Load airline breakdown for this snapshot
-        airline_rows = con.execute("""
-            SELECT icao, airline, count
-            FROM airport_airlines
-            WHERE snapshot_time = ?
-        """, [snap_time]).fetchall()
+        # Load airline breakdown with status for this snapshot
+        try:
+            airline_rows = con.execute("""
+                SELECT icao, airline, count, on_ground, descending, climbing, low_alt
+                FROM airport_airlines
+                WHERE snapshot_time = ?
+            """, [snap_time]).fetchall()
+            _has_status = True
+        except Exception:
+            # Fallback if status columns don't exist yet
+            airline_rows = con.execute("""
+                SELECT icao, airline, count
+                FROM airport_airlines
+                WHERE snapshot_time = ?
+            """, [snap_time]).fetchall()
+            _has_status = False
         con.close()
         # Build airline lookup: icao -> {airline: count}
         airline_lookup = {}
+        airline_status_lookup = {}
         for ar in airline_rows:
             airline_lookup.setdefault(ar[0], {})[ar[1]] = ar[2]
+            if _has_status:
+                airline_status_lookup.setdefault(ar[0], {})[ar[1]] = {
+                    "on_ground": ar[3] or 0, "descending": ar[4] or 0,
+                    "climbing": ar[5] or 0, "low_alt": ar[6] or 0,
+                }
         airports = []
         for r in rows:
             airports.append({
@@ -297,6 +313,7 @@ def _load_from_motherduck():
                 "low_altitude": r[6], "descending": r[7], "climbing": r[8],
                 "total_nearby": r[9], "aircraft": [],
                 "airlines": airline_lookup.get(r[0], {}),
+                "airline_status": airline_status_lookup.get(r[0], {}),
             })
         return {
             "timestamp": snap_time if isinstance(snap_time, str) else snap_time.isoformat(),
