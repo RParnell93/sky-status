@@ -1346,7 +1346,7 @@ if top_airports:
     fig2.add_trace(go.Bar(
         y=[a["iata"] for a in top_airports],
         x=[a["on_ground"] for a in top_airports],
-        name="Ground", orientation="h",
+        name="On Ground", orientation="h",
         marker_color=NAVY_LIGHT,
         text=[a["on_ground"] for a in top_airports], textposition="inside",
         hoverinfo="none",
@@ -1354,7 +1354,7 @@ if top_airports:
     fig2.add_trace(go.Bar(
         y=[a["iata"] for a in top_airports],
         x=[a["low_altitude"] for a in top_airports],
-        name="Low Altitude (<10k ft)", orientation="h",
+        name="Low Altitude", orientation="h",
         marker_color=SILVER,
         text=[a["low_altitude"] for a in top_airports], textposition="inside",
         hoverinfo="none",
@@ -1362,7 +1362,7 @@ if top_airports:
     fig2.add_trace(go.Bar(
         y=[a["iata"] for a in top_airports],
         x=[a["descending"] for a in top_airports],
-        name="Descending", orientation="h",
+        name="Arriving", orientation="h",
         marker_color=RED,
         text=[a["descending"] for a in top_airports], textposition="inside",
         hoverinfo="none",
@@ -1370,7 +1370,7 @@ if top_airports:
     fig2.add_trace(go.Bar(
         y=[a["iata"] for a in top_airports],
         x=[a["climbing"] for a in top_airports],
-        name="Climbing", orientation="h",
+        name="Departing", orientation="h",
         marker_color="#2E8B57",
         text=[a["climbing"] for a in top_airports], textposition="inside",
         hoverinfo="none",
@@ -1477,10 +1477,7 @@ def _load_heatmap_data():
         rows = con.execute("""
             SELECT iata, EXTRACT(HOUR FROM snapshot_time) as hour, AVG(active) as avg_active
             FROM airport_congestion
-            WHERE iata IN (
-                SELECT iata FROM airport_congestion
-                GROUP BY iata ORDER BY AVG(active) DESC LIMIT 15
-            )
+            WHERE active > 0
             GROUP BY iata, hour
             ORDER BY iata, hour
         """).fetchall()
