@@ -949,10 +949,7 @@ def _show_airport_card(iata):
         f'<span style="font-family:JetBrains Mono,monospace;font-size:2.2em;font-weight:900;color:{WHITE};">{iata}</span>'
         f'<div><div style="font-size:1em;font-weight:700;color:{WHITE};">{apt["name"]}</div>'
         f'<div style="font-size:0.7em;color:{SILVER};">{apt.get("icao","")} | {apt["active"]} active aircraft</div></div>'
-        f'<div style="margin-left:auto;text-align:right;">'
-        f'<span style="font-family:JetBrains Mono,monospace;font-size:1.8em;font-weight:900;color:{color};">{score:.0f}</span>'
-        f'<div style="font-size:0.65em;color:{color};font-weight:600;">{label}</div>'
-        f'</div></div>',
+        f'</div>',
         unsafe_allow_html=True,
     )
 
